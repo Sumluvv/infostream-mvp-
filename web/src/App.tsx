@@ -4,12 +4,16 @@ export default function App() {
   const [mounted, setMounted] = useState(false)
   const [token, setToken] = useState<string | null>(null)
   const [feeds, setFeeds] = useState<any[]>([])
+  const [groups, setGroups] = useState<any[]>([])
   const [items, setItems] = useState<any[]>([])
   const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
   const [rssUrl, setRssUrl] = useState('')
   const [isImporting, setIsImporting] = useState(false)
   const [showError, setShowError] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
+  const [showGroupModal, setShowGroupModal] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
 
   useEffect(() => {
     console.log('App mounted')
@@ -22,6 +26,7 @@ export default function App() {
       
       if (storedToken) {
         loadFeedsWithToken(storedToken)
+        loadGroupsWithToken(storedToken)
       }
     } catch (error) {
       console.error('localStorage error:', error)
@@ -42,6 +47,23 @@ export default function App() {
       }
     } catch (error) {
       console.error('Failed to load feeds:', error)
+    }
+  }
+
+  const loadGroupsWithToken = async (authToken: string) => {
+    try {
+      const response = await fetch('/api/feeds/groups', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setGroups(data.groups || data)
+      }
+    } catch (error) {
+      console.error('Failed to load groups:', error)
     }
   }
 
@@ -121,9 +143,102 @@ export default function App() {
         const data = await response.json()
         setItems(data.items || data)
         setSelectedFeedId(feedId)
+        setSelectedGroupId(null)
       }
     } catch (error) {
       console.error('Failed to load items:', error)
+    }
+  }
+
+  const loadGroupItems = async (groupId: string) => {
+    if (!token) return
+    
+    try {
+      const response = await fetch(`/api/feeds/groups/${groupId}/items`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setItems(data.items || data)
+        setSelectedGroupId(groupId)
+        setSelectedFeedId(null)
+      }
+    } catch (error) {
+      console.error('Failed to load group items:', error)
+    }
+  }
+
+  const deleteFeed = async (feedId: string) => {
+    if (!token) return
+    
+    try {
+      const response = await fetch(`/api/feeds/${feedId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (response.ok) {
+        setFeeds(prev => prev.filter(feed => feed.id !== feedId))
+        if (selectedFeedId === feedId) {
+          setItems([])
+          setSelectedFeedId(null)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete feed:', error)
+    }
+  }
+
+  const createGroup = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!token || !newGroupName.trim()) return
+    
+    try {
+      const response = await fetch('/api/feeds/groups', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ name: newGroupName.trim() })
+      })
+      
+      if (response.ok) {
+        const newGroup = await response.json()
+        setGroups(prev => [...prev, newGroup])
+        setNewGroupName('')
+        setShowGroupModal(false)
+      }
+    } catch (error) {
+      console.error('Failed to create group:', error)
+    }
+  }
+
+  const updateFeedGroup = async (feedId: string, groupId: string | null) => {
+    if (!token) return
+    
+    try {
+      const response = await fetch(`/api/feeds/${feedId}/group`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ groupId })
+      })
+      
+      if (response.ok) {
+        setFeeds(prev => prev.map(feed => 
+          feed.id === feedId ? { ...feed, groupId } : feed
+        ))
+      }
+    } catch (error) {
+      console.error('Failed to update feed group:', error)
     }
   }
 
@@ -139,7 +254,7 @@ export default function App() {
   }
 
   if (!token) {
-    return (
+  return (
       <div className="min-h-screen bg-black text-white relative overflow-hidden">
         {/* Apple 风格背景渐变 */}
         <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-black to-gray-800"></div>
@@ -430,9 +545,17 @@ export default function App() {
                     <p className="text-sm text-gray-500 mt-1">管理你的信息源</p>
                   </div>
                 </div>
-                <span className="px-3 py-1 text-xs font-semibold bg-gray-100 text-gray-600 rounded-full">                        
-                  {feeds.length}
-                </span>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setShowGroupModal(true)}
+                    className="px-3 py-1 text-xs font-semibold bg-blue-100 text-blue-600 rounded-full hover:bg-blue-200 transition-colors"
+                  >
+                    + 新建分组
+                  </button>
+                  <span className="px-3 py-1 text-xs font-semibold bg-gray-100 text-gray-600 rounded-full">                        
+                    {feeds.length}
+                  </span>
+                </div>
               </div>
               <div className="space-y-2">
                 {feeds.length === 0 ? (
@@ -447,18 +570,57 @@ export default function App() {
                   </div>
                 ) : (
                   feeds.map(feed => (
-                    <button
+                    <div
                       key={feed.id}
-                      onClick={() => loadItems(feed.id)}
-                      className={`w-full text-left p-4 rounded-2xl text-sm transition-all duration-200 ${
+                      className={`w-full p-4 rounded-2xl text-sm transition-all duration-200 ${
                         selectedFeedId === feed.id 
                           ? 'bg-blue-50 border border-blue-200 text-blue-900' 
                           : 'hover:bg-gray-50 border border-transparent'
                       }`}
                     >
-                      <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
-                      <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
+                      <div className="flex items-center justify-between">
+                        <button
+                          onClick={() => loadItems(feed.id)}
+                          className="flex-1 text-left"
+                        >
+                          <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
+                          <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
+                          {feed.group && (
+                            <div className="text-xs text-blue-600 mt-1">
+                              📁 {feed.group.name}
+                            </div>
+                          )}
+                        </button>
+                        <div className="flex items-center space-x-2 ml-2">
+                          <select
+                            value={feed.groupId || ''}
+                            onChange={(e) => updateFeedGroup(feed.id, e.target.value || null)}
+                            className="text-xs px-2 py-1 border border-gray-200 rounded-lg bg-white"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <option value="">无分组</option>
+                            {groups.map(group => (
+                              <option key={group.id} value={group.id}>
+                                {group.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (confirm('确定要删除这个订阅源吗？')) {
+                                deleteFeed(feed.id)
+                              }
+                            }}
+                            className="text-red-500 hover:text-red-700 p-1"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
         </button>
+                        </div>
+                      </div>
+                    </div>
                   ))
                 )}
               </div>
@@ -476,12 +638,43 @@ export default function App() {
                 background: 'linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.7) 100%)'
               }}
             >
-              <div className="p-8 border-b border-gray-200/50">
-                <div className="flex items-center justify-between">
+              <div className="p-8 border-b border-gray-200/50">              
+                <div className="flex items-center justify-between mb-4">          
                   <div>
-                    <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">文章列表</h2>
-                    <p className="text-sm text-gray-500 mt-1">浏览最新内容</p>
+                    <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">文章列表</h2>  
+                    <p className="text-sm text-gray-500 mt-1">浏览最新内容</p>                         
                   </div>
+                </div>
+                
+                {/* 分组选择器 */}
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => {
+                      setItems([])
+                      setSelectedGroupId(null)
+                      setSelectedFeedId(null)
+                    }}
+                    className={`px-3 py-1 text-sm rounded-full transition-colors ${
+                      !selectedGroupId && !selectedFeedId
+                        ? 'bg-blue-100 text-blue-600'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    全部
+                  </button>
+                  {groups.map(group => (
+                    <button
+                      key={group.id}
+                      onClick={() => loadGroupItems(group.id)}
+                      className={`px-3 py-1 text-sm rounded-full transition-colors ${
+                        selectedGroupId === group.id
+                          ? 'bg-blue-100 text-blue-600'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      📁 {group.name}
+                    </button>
+                  ))}
                 </div>
               </div>
               <div className="max-h-[700px] overflow-y-auto">                
@@ -501,9 +694,22 @@ export default function App() {
                       <div key={item.id} className="p-6 hover:bg-gray-50 transition-colors">
                         <div className="flex items-start justify-between">
                           <div className="flex-1 min-w-0">
-                            <h3 className="text-lg font-medium text-gray-900 mb-2 line-clamp-2">
-                              {item.title}
-                            </h3>
+                            <div className="flex items-center mb-2">
+                              <h3 className="text-lg font-medium text-gray-900 line-clamp-2">
+                                {item.title}
+                              </h3>
+                              {item.feed?.group && (
+                                <span 
+                                  className="ml-2 px-2 py-1 text-xs font-medium rounded-full"
+                                  style={{ 
+                                    backgroundColor: `${item.feed.group.color}20`,
+                                    color: item.feed.group.color 
+                                  }}
+                                >
+                                  📁 {item.feed.group.name}
+                                </span>
+                              )}
+                            </div>
                             <p className="text-sm text-gray-600 mb-3 line-clamp-3">
                               {item.content}
                             </p>
@@ -518,6 +724,11 @@ export default function App() {
                                 hour: '2-digit',
                                 minute: '2-digit'
                               })}
+                              {item.feed?.title && (
+                                <span className="ml-2 text-blue-600">
+                                  • {item.feed.title}
+                                </span>
+                              )}
                             </div>
                           </div>
                           {item.link && (
@@ -574,6 +785,53 @@ export default function App() {
                 重试
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 创建分组弹窗 */}
+      {showGroupModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-center mb-4">
+              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center mr-3">
+                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">创建新分组</h3>
+            </div>
+            <form onSubmit={createGroup} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">分组名称</label>
+                <input
+                  type="text"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  placeholder="例如：科技新闻、财经资讯"
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  required
+                />
+              </div>
+              <div className="flex space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGroupModal(false)
+                    setNewGroupName('')
+                  }}
+                  className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  创建分组
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

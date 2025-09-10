@@ -20,9 +20,20 @@ export async function feedRoutes(app: FastifyInstance) {
     const userId = (req as any).user?.sub as string;
     const feeds = await prisma.feed.findMany({ 
       where: { userId },
+      include: { group: true },
       orderBy: { createdAt: 'desc' }
     });
     return { feeds };
+  });
+
+  app.get('/groups', async (req, reply) => {
+    const userId = (req as any).user?.sub as string;
+    const groups = await prisma.group.findMany({ 
+      where: { userId },
+      include: { feeds: true },
+      orderBy: { createdAt: 'asc' }
+    });
+    return { groups };
   });
 
   app.post('/import', async (req, reply) => {
@@ -88,6 +99,101 @@ export async function feedRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const items = await prisma.item.findMany({ where: { feedId: id }, orderBy: { published: 'desc' } });
     return { items };
+  });
+
+  // 删除订阅源
+  app.delete('/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const userId = (req as any).user?.sub as string;
+    
+    try {
+      // 先删除相关的文章
+      await prisma.item.deleteMany({ where: { feedId: id } });
+      // 再删除订阅源
+      await prisma.feed.delete({ where: { id, userId } });
+      return { success: true };
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to delete feed' });
+    }
+  });
+
+  // 创建分组
+  app.post('/groups', async (req, reply) => {
+    const schema = z.object({ 
+      name: z.string().min(1),
+      color: z.string().optional()
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid payload' });
+
+    const userId = (req as any).user?.sub as string;
+    const { name, color } = parsed.data;
+
+    try {
+      const group = await prisma.group.create({
+        data: { userId, name, color: color || '#3b82f6' }
+      });
+      return group;
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to create group' });
+    }
+  });
+
+  // 更新订阅源分组
+  app.patch('/:id/group', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const schema = z.object({ groupId: z.string().nullable() });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid payload' });
+
+    const userId = (req as any).user?.sub as string;
+    const { groupId } = parsed.data;
+
+    try {
+      const feed = await prisma.feed.update({
+        where: { id, userId },
+        data: { groupId }
+      });
+      return feed;
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to update feed group' });
+    }
+  });
+
+  // 获取分组的所有文章
+  app.get('/groups/:groupId/items', async (req, reply) => {
+    const { groupId } = req.params as { groupId: string };
+    const userId = (req as any).user?.sub as string;
+
+    try {
+      const items = await prisma.item.findMany({
+        where: {
+          feed: {
+            groupId,
+            userId
+          }
+        },
+        include: {
+          feed: {
+            select: {
+              id: true,
+              title: true,
+              group: {
+                select: {
+                  id: true,
+                  name: true,
+                  color: true
+                }
+              }
+            }
+          }
+        },
+        orderBy: { published: 'desc' }
+      });
+      return { items };
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to load group items' });
+    }
   });
 
   // 网页转 RSS 功能

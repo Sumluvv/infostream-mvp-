@@ -17,6 +17,7 @@ model User {
   updatedAt DateTime @updatedAt
   sessions  Session[]
   feeds     Feed[]
+  groups    Group[]
 }
 
 model Session {
@@ -31,11 +32,24 @@ model Feed {
   id         String   @id @default(cuid())
   userId     String
   user       User     @relation(fields: [userId], references: [id])
+  groupId    String?
+  group      Group?   @relation(fields: [groupId], references: [id])
   url        String
   title      String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   items      Item[]
+}
+
+model Group {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  color     String?  @default("#3b82f6")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  feeds     Feed[]
 }
 
 model Item {
