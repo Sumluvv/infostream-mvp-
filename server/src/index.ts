@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import dotenv from 'dotenv';
 import { authRoutes } from './modules/auth/routes';
+import { feedRoutes } from './modules/feeds/routes';
 
 dotenv.config();
 
@@ -11,6 +12,7 @@ const buildServer = () => {
 
   app.get('/health', async () => ({ status: 'ok' }));
   app.register(authRoutes, { prefix: '/api/auth' });
+  app.register(feedRoutes, { prefix: '/api/feeds' });
 
   return app;
 };
