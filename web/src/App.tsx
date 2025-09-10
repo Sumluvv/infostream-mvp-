@@ -127,7 +127,9 @@ export default function App() {
         alert('RSS 导入成功！')
       } else {
         const errorData = await response.json()
-        setErrorMessage(errorData.message || '导入失败，请检查RSS链接是否正确')
+        const errorMsg = errorData.message || '导入失败，请检查RSS链接是否正确'
+        const suggestion = errorData.suggestion ? `\n\n建议：${errorData.suggestion}` : ''
+        setErrorMessage(errorMsg + suggestion)
         setShowError(true)
       }
     } catch (error) {

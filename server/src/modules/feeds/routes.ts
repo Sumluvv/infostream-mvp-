@@ -94,9 +94,47 @@ export async function feedRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       console.error('RSS Import Error:', error);
+      
+      let errorMessage = 'Unknown error';
+      let suggestion = '请检查RSS链接是否正确';
+      
+      if (error instanceof Error) {
+        const message = error.message;
+        
+        // 分析具体错误类型
+        if (message.includes('Status code 404')) {
+          errorMessage = 'RSS链接不存在 (404)';
+          suggestion = '该RSS链接可能已失效，请检查链接是否正确或联系网站管理员';
+        } else if (message.includes('Status code 504') || message.includes('Gateway Time-out')) {
+          errorMessage = '服务器响应超时 (504)';
+          suggestion = '服务器暂时无法响应，请稍后重试或检查网络连接';
+        } else if (message.includes('Status code 403')) {
+          errorMessage = '访问被拒绝 (403)';
+          suggestion = '该RSS链接可能需要特殊权限访问，请检查是否需要登录';
+        } else if (message.includes('Status code 500')) {
+          errorMessage = '服务器内部错误 (500)';
+          suggestion = 'RSS服务器出现问题，请稍后重试';
+        } else if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
+          errorMessage = '域名无法解析';
+          suggestion = '网站域名可能已失效或不存在，请检查链接是否正确';
+        } else if (message.includes('ECONNREFUSED')) {
+          errorMessage = '连接被拒绝';
+          suggestion = '无法连接到RSS服务器，请检查网络连接';
+        } else if (message.includes('timeout')) {
+          errorMessage = '连接超时';
+          suggestion = '网络连接超时，请检查网络状况后重试';
+        } else if (message.includes('Invalid XML') || message.includes('XML parsing')) {
+          errorMessage = 'RSS格式错误';
+          suggestion = '该链接不是有效的RSS格式，请确认链接是否正确';
+        } else {
+          errorMessage = message;
+        }
+      }
+      
       return reply.code(500).send({ 
         error: 'Failed to import RSS feed',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: errorMessage,
+        suggestion: suggestion
       });
     }
   });
