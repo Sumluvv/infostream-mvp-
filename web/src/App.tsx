@@ -787,7 +787,8 @@ export default function App() {
                                 </svg>
                               </a>
                             )}
-                            {item.feed?.group && (
+                            {/* 只在"全部"视图中显示分组标签，具体分组视图中隐藏 */}
+                            {!selectedGroupId && item.feed?.group && (
                               <span 
                                 className="px-2 py-1 text-xs font-medium rounded-full"
                                 style={{ 
