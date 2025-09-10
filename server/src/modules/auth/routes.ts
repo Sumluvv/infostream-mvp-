@@ -1,13 +1,13 @@
-import { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import bcrypt from 'bcrypt';
-import jwt from 'fastify-jwt';
+import fastifyJwt from '@fastify/jwt';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
 export async function authRoutes(app: FastifyInstance) {
-  app.register(jwt, { secret: process.env.JWT_SECRET || 'change_me_in_prod' });
+  app.register(fastifyJwt, { secret: process.env.JWT_SECRET || 'change_me_in_prod' });
 
   app.post('/signup', async (req, reply) => {
     const schema = z.object({
