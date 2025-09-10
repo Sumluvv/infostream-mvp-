@@ -85,7 +85,13 @@ export async function feedRoutes(app: FastifyInstance) {
         }
       }
 
-      return { id: feed.id };
+      return { 
+        id: feed.id, 
+        title: feedTitle, 
+        url: url,
+        groupId: null,
+        group: null
+      };
     } catch (error) {
       console.error('RSS Import Error:', error);
       return reply.code(500).send({ 

@@ -89,10 +89,18 @@ export default function App() {
   const importRSS = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!rssUrl.trim()) return
-    
+
+    // 检查是否已经导入过这个RSS
+    const existingFeed = feeds.find(feed => feed.url === rssUrl.trim())
+    if (existingFeed) {
+      setErrorMessage('该RSS源已经订阅过了！')
+      setShowError(true)
+      return
+    }
+
     setIsImporting(true)
     setShowError(false)
-    
+
     try {
       const response = await fetch('/api/feeds/import', {
         method: 'POST',
@@ -102,17 +110,17 @@ export default function App() {
         },
         body: JSON.stringify({ url: rssUrl })
       })
-      
+
       if (response.ok) {
         const newFeed = await response.json()
         setFeeds(prev => [...prev, newFeed])
         setRssUrl('')
-        
+
         // 自动加载新导入的RSS的文章
         if (newFeed.id) {
           await loadItems(newFeed.id)
         }
-        
+
         // 显示成功消息
         alert('RSS 导入成功！')
       } else {
@@ -168,6 +176,46 @@ export default function App() {
       }
     } catch (error) {
       console.error('Failed to load group items:', error)
+    }
+  }
+
+  const loadAllItems = async () => {
+    if (!token) return
+    
+    try {
+      // 获取所有订阅源的文章
+      const allItems = []
+      for (const feed of feeds) {
+        const response = await fetch(`/api/feeds/${feed.id}/items`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          const items = data.items || data
+          // 为每个文章添加feed信息
+          const itemsWithFeed = items.map((item: any) => ({
+            ...item,
+            feed: {
+              id: feed.id,
+              title: feed.title,
+              group: feed.group
+            }
+          }))
+          allItems.push(...itemsWithFeed)
+        }
+      }
+      
+      // 按时间排序
+      allItems.sort((a, b) => new Date(b.published).getTime() - new Date(a.published).getTime())
+      
+      setItems(allItems)
+      setSelectedGroupId(null)
+      setSelectedFeedId(null)
+    } catch (error) {
+      console.error('Failed to load all items:', error)
     }
   }
 
@@ -649,11 +697,7 @@ export default function App() {
                 {/* 分组选择器 */}
                 <div className="flex items-center space-x-2">
                   <button
-                    onClick={() => {
-                      setItems([])
-                      setSelectedGroupId(null)
-                      setSelectedFeedId(null)
-                    }}
+                    onClick={loadAllItems}
                     className={`px-3 py-1 text-sm rounded-full transition-colors ${
                       !selectedGroupId && !selectedFeedId
                         ? 'bg-blue-100 text-blue-600'
@@ -694,22 +738,9 @@ export default function App() {
                       <div key={item.id} className="p-6 hover:bg-gray-50 transition-colors">
                         <div className="flex items-start justify-between">
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center mb-2">
-                              <h3 className="text-lg font-medium text-gray-900 line-clamp-2">
-                                {item.title}
-                              </h3>
-                              {item.feed?.group && (
-                                <span 
-                                  className="ml-2 px-2 py-1 text-xs font-medium rounded-full"
-                                  style={{ 
-                                    backgroundColor: `${item.feed.group.color}20`,
-                                    color: item.feed.group.color 
-                                  }}
-                                >
-                                  📁 {item.feed.group.name}
-                                </span>
-                              )}
-                            </div>
+                            <h3 className="text-lg font-medium text-gray-900 mb-2 line-clamp-2">
+                              {item.title}
+                            </h3>
                             <p className="text-sm text-gray-600 mb-3 line-clamp-3">
                               {item.content}
                             </p>
@@ -731,19 +762,32 @@ export default function App() {
                               )}
                             </div>
                           </div>
-                          {item.link && (
-                            <a
-                              href={item.link}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="ml-4 flex-shrink-0 inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
-                            >
-                              阅读原文
-                              <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                              </svg>
-                            </a>
-                          )}
+                          <div className="ml-4 flex-shrink-0 flex flex-col items-end space-y-2">
+                            {item.link && (
+                              <a
+                                href={item.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+                              >
+                                阅读原文
+                                <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                </svg>
+                              </a>
+                            )}
+                            {item.feed?.group && (
+                              <span 
+                                className="px-2 py-1 text-xs font-medium rounded-full"
+                                style={{ 
+                                  backgroundColor: `${item.feed.group.color}20`,
+                                  color: item.feed.group.color 
+                                }}
+                              >
+                                📁 {item.feed.group.name}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}
