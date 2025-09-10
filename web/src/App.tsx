@@ -14,6 +14,7 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState('')
   const [showGroupModal, setShowGroupModal] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     console.log('App mounted')
@@ -300,6 +301,18 @@ export default function App() {
     } catch (error) {
       console.error('Failed to update feed group:', error)
     }
+  }
+
+  const toggleGroupExpansion = (groupId: string) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(groupId)) {
+        newSet.delete(groupId)
+      } else {
+        newSet.add(groupId)
+      }
+      return newSet
+    })
   }
 
   if (!mounted) {
@@ -617,82 +630,204 @@ export default function App() {
                   </span>
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {feeds.length === 0 ? (
                   <div className="text-center py-12 text-gray-500">              
                     <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-2xl flex items-center justify-center">                
                       <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">                  
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />               
-                      </svg>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />                  
+                      </svg>                
                     </div>
                     <p className="text-sm font-semibold text-gray-700">暂无订阅源</p>                      
                     <p className="text-xs text-gray-400 mt-2">导入 RSS 链接开始使用</p>                    
                   </div>
                 ) : (
-                  feeds.map(feed => (
-                    <div
-                      key={feed.id}
-                      className={`w-full p-4 rounded-2xl text-sm transition-all duration-200 ${
-                        selectedFeedId === feed.id 
-                          ? 'bg-blue-50 border border-blue-200 text-blue-900' 
-                          : 'hover:bg-gray-50 border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <button
-                          onClick={() => loadItems(feed.id)}
-                          className="flex-1 text-left"
-                        >
-                          <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
-                          <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
-                          {feed.group && (
-                            <div className="text-xs text-blue-600 mt-1">
-                              📁 {feed.group.name}
+                  <>
+                    {/* 无分组的订阅源 */}
+                    {feeds.filter(feed => !feed.groupId).length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-semibold text-gray-700 px-2">未分组</h3>
+                          <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">
+                            {feeds.filter(feed => !feed.groupId).length}
+                          </span>
+                        </div>
+                        {feeds.filter(feed => !feed.groupId).map(feed => (
+                          <div
+                            key={feed.id}
+                            className={`w-full p-4 rounded-2xl text-sm transition-all duration-200 ${
+                              selectedFeedId === feed.id 
+                                ? 'bg-blue-50 border border-blue-200 text-blue-900' 
+                                : 'hover:bg-gray-50 border border-transparent'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <button
+                                onClick={() => loadItems(feed.id)}
+                                className="flex-1 text-left"
+                              >
+                                <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
+                                <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
+                              </button>
+                              <div className="flex items-center space-x-2 ml-2">
+                                <div className="relative">
+                                  <select
+                                    value={feed.groupId || ''}
+                                    onChange={(e) => updateFeedGroup(feed.id, e.target.value || null)}
+                                    className="appearance-none text-xs px-3 py-2 pr-8 border border-gray-200 rounded-xl bg-white/80 hover:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 shadow-sm hover:shadow-md"
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      backdropFilter: 'blur(10px)',
+                                      WebkitBackdropFilter: 'blur(10px)'
+                                    }}
+                                  >
+                                    <option value="">📁 选择分组</option>
+                                    {groups.map(group => (
+                                      <option key={group.id} value={group.id}>
+                                        📁 {group.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                                    <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    if (confirm('确定要删除这个订阅源吗？')) {
+                                      deleteFeed(feed.id)
+                                    }
+                                  }}
+                                  className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-xl transition-all duration-200"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
+                              </div>
                             </div>
-                          )}
-                        </button>
-                        <div className="flex items-center space-x-2 ml-2">
-                          <div className="relative">
-                            <select
-                              value={feed.groupId || ''}
-                              onChange={(e) => updateFeedGroup(feed.id, e.target.value || null)}
-                              className="appearance-none text-xs px-3 py-2 pr-8 border border-gray-200 rounded-xl bg-white/80 hover:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 shadow-sm hover:shadow-md"
-                              onClick={(e) => e.stopPropagation()}
-                              style={{
-                                backdropFilter: 'blur(10px)',
-                                WebkitBackdropFilter: 'blur(10px)'
-                              }}
-                            >
-                              <option value="">📁 选择分组</option>
-                              {groups.map(group => (
-                                <option key={group.id} value={group.id}>
-                                  📁 {group.name}
-                                </option>
-                              ))}
-                            </select>
-                            <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                              <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 分组的订阅源 */}
+                    {groups.map(group => {
+                      const groupFeeds = feeds.filter(feed => feed.groupId === group.id)
+                      if (groupFeeds.length === 0) return null
+                      
+                      const isExpanded = expandedGroups.has(group.id)
+                      
+                      return (
+                        <div key={group.id} className="space-y-2">
+                          <button
+                            onClick={() => toggleGroupExpansion(group.id)}
+                            className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-all duration-200 group"
+                          >
+                            <div className="flex items-center space-x-3">
+                              <div 
+                                className="w-8 h-8 rounded-lg flex items-center justify-center shadow-sm"
+                                style={{
+                                  backgroundColor: `${group.color}20`,
+                                  color: group.color
+                                }}
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
+                                </svg>
+                              </div>
+                              <div className="text-left">
+                                <div className="font-semibold text-gray-900 text-sm">{group.name}</div>
+                                <div className="text-xs text-gray-500">{groupFeeds.length} 个订阅源</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">
+                                {groupFeeds.length}
+                              </span>
+                              <svg 
+                                className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${
+                                  isExpanded ? 'rotate-180' : ''
+                                }`} 
+                                fill="none" 
+                                stroke="currentColor" 
+                                viewBox="0 0 24 24"
+                              >
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                               </svg>
                             </div>
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (confirm('确定要删除这个订阅源吗？')) {
-                                deleteFeed(feed.id)
-                              }
-                            }}
-                            className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-xl transition-all duration-200"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
                           </button>
+                          
+                          {isExpanded && (
+                            <div className="ml-4 space-y-2">
+                              {groupFeeds.map(feed => (
+                                <div
+                                  key={feed.id}
+                                  className={`w-full p-4 rounded-2xl text-sm transition-all duration-200 ${
+                                    selectedFeedId === feed.id 
+                                      ? 'bg-blue-50 border border-blue-200 text-blue-900' 
+                                      : 'hover:bg-gray-50 border border-transparent'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <button
+                                      onClick={() => loadItems(feed.id)}
+                                      className="flex-1 text-left"
+                                    >
+                                      <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
+                                      <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
+                                    </button>
+                                    <div className="flex items-center space-x-2 ml-2">
+                                      <div className="relative">
+                                        <select
+                                          value={feed.groupId || ''}
+                                          onChange={(e) => updateFeedGroup(feed.id, e.target.value || null)}
+                                          className="appearance-none text-xs px-3 py-2 pr-8 border border-gray-200 rounded-xl bg-white/80 hover:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 shadow-sm hover:shadow-md"
+                                          onClick={(e) => e.stopPropagation()}
+                                          style={{
+                                            backdropFilter: 'blur(10px)',
+                                            WebkitBackdropFilter: 'blur(10px)'
+                                          }}
+                                        >
+                                          <option value="">📁 选择分组</option>
+                                          {groups.map(g => (
+                                            <option key={g.id} value={g.id}>
+                                              📁 {g.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                                          <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                          </svg>
+                                        </div>
+                                      </div>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          if (confirm('确定要删除这个订阅源吗？')) {
+                                            deleteFeed(feed.id)
+                                          }
+                                        }}
+                                        className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-xl transition-all duration-200"
+                                      >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    </div>
-                  ))
+                      )
+                    })}
+                  </>
                 )}
               </div>
             </div>
