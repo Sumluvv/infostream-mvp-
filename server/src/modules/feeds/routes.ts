@@ -1,20 +1,36 @@
 import type { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import Parser from 'rss-parser';
+import puppeteer from 'puppeteer';
 import { z } from 'zod';
 
 const prisma = new PrismaClient();
 const parser = new Parser();
 
 export async function feedRoutes(app: FastifyInstance) {
+  app.addHook('onRequest', async (req, reply) => {
+    try {
+      await (req as any).jwtVerify();
+    } catch {
+      return reply.code(401).send({ error: 'Unauthorized' });
+    }
+  });
+
+  app.get('/', async (req, reply) => {
+    const userId = (req as any).user?.sub as string;
+    const feeds = await prisma.feed.findMany({ 
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+    return { feeds };
+  });
+
   app.post('/import', async (req, reply) => {
     const schema = z.object({ url: z.string().url() });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
 
-    // TODO: replace with real auth; for now accept x-user-id header
-    const userId = (req.headers['x-user-id'] as string) || '';
-    if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+    const userId = (req as any).user?.sub as string;
 
     const { url } = parsed.data;
     const feedData = await parser.parseURL(url);
@@ -45,6 +61,116 @@ export async function feedRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const items = await prisma.item.findMany({ where: { feedId: id }, orderBy: { published: 'desc' } });
     return { items };
+  });
+
+  // 网页转 RSS 功能
+  app.post('/webpage-to-rss', async (req, reply) => {
+    const schema = z.object({ 
+      url: z.string().url(),
+      selectors: z.object({
+        title: z.string(),
+        content: z.string(),
+        link: z.string().optional(),
+        time: z.string().optional()
+      })
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid payload' });
+
+    const { url, selectors } = parsed.data;
+    const userId = (req as any).user?.sub as string;
+
+    try {
+      const browser = await puppeteer.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: 'networkidle2' });
+
+      // 使用选择器抓取内容
+      const scrapedData = await page.evaluate((sel) => {
+        const elements = document.querySelectorAll(sel.title);
+        const items = [];
+        
+        for (let i = 0; i < Math.min(elements.length, 10); i++) {
+          const element = elements[i];
+          const title = element.textContent?.trim() || '';
+          const link = element.closest('a')?.href || '';
+          
+          // 尝试找到对应的内容
+          const contentEl = element.closest('*')?.querySelector(sel.content);
+          const content = contentEl?.textContent?.trim() || '';
+          
+          // 尝试找到时间
+          const timeEl = element.closest('*')?.querySelector(sel.time);
+          const time = timeEl?.textContent?.trim() || new Date().toISOString();
+          
+          if (title) {
+            items.push({ title, content, link, time });
+          }
+        }
+        
+        return items;
+      }, selectors);
+
+      await browser.close();
+
+      // 创建 Feed
+      const feed = await prisma.feed.create({ 
+        data: { 
+          userId, 
+          url, 
+          title: `网页抓取: ${new URL(url).hostname}` 
+        } 
+      });
+
+      // 保存抓取的文章
+      for (const item of scrapedData) {
+        await prisma.item.create({
+          data: {
+            feedId: feed.id,
+            title: item.title,
+            content: item.content,
+            link: item.link,
+            published: new Date(item.time),
+          }
+        });
+      }
+
+      return { id: feed.id, items: scrapedData };
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to scrape webpage' });
+    }
+  });
+
+  // 获取网页预览（用于选择器测试）
+  app.post('/webpage-preview', async (req, reply) => {
+    const schema = z.object({ url: z.string().url() });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
+
+    const { url } = parsed.data;
+
+    try {
+      const browser = await puppeteer.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: 'networkidle2' });
+
+      // 获取页面标题和可能的文章元素
+      const pageInfo = await page.evaluate(() => {
+        const title = document.title;
+        const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+          .map(h => ({ text: h.textContent?.trim(), tag: h.tagName }));
+        const links = Array.from(document.querySelectorAll('a[href]'))
+          .slice(0, 10)
+          .map(a => ({ text: a.textContent?.trim(), href: a.href }));
+        
+        return { title, headings, links };
+      });
+
+      await browser.close();
+      return pageInfo;
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to preview webpage' });
+    }
   });
 }
 

@@ -3,12 +3,14 @@ import cors from '@fastify/cors';
 import dotenv from 'dotenv';
 import { authRoutes } from './modules/auth/routes';
 import { feedRoutes } from './modules/feeds/routes';
+import fastifyJwt from '@fastify/jwt';
 
 dotenv.config();
 
 const buildServer = () => {
   const app = Fastify({ logger: true });
   app.register(cors, { origin: true });
+  app.register(fastifyJwt, { secret: process.env.JWT_SECRET || 'change_me_in_prod' });
 
   app.get('/health', async () => ({ status: 'ok' }));
   app.register(authRoutes, { prefix: '/api/auth' });

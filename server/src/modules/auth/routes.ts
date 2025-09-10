@@ -7,7 +7,6 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 export async function authRoutes(app: FastifyInstance) {
-  app.register(fastifyJwt, { secret: process.env.JWT_SECRET || 'change_me_in_prod' });
 
   app.post('/signup', async (req, reply) => {
     const schema = z.object({
