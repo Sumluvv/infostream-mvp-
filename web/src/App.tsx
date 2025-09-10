@@ -332,6 +332,60 @@ export default function App() {
     })
   }
 
+  const deleteGroup = async (groupId: string) => {
+    if (!token) return
+    
+    const group = groups.find(g => g.id === groupId)
+    if (!group) return
+    
+    // 检查分组中是否有订阅源
+    const groupFeeds = feeds.filter(feed => feed.groupId === groupId)
+    if (groupFeeds.length > 0) {
+      if (!confirm(`分组"${group.name}"中还有 ${groupFeeds.length} 个订阅源，确定要删除吗？删除后这些订阅源将变为未分组状态。`)) {
+        return
+      }
+    } else {
+      if (!confirm(`确定要删除分组"${group.name}"吗？`)) {
+        return
+      }
+    }
+    
+    try {
+      const response = await fetch(`/api/feeds/groups/${groupId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (response.ok) {
+        // 删除分组
+        setGroups(prev => prev.filter(g => g.id !== groupId))
+        
+        // 将分组中的订阅源设为未分组
+        setFeeds(prev => prev.map(feed => 
+          feed.groupId === groupId ? { ...feed, groupId: null, group: null } : feed
+        ))
+        
+        // 从展开状态中移除
+        setExpandedGroups(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(groupId)
+          return newSet
+        })
+        
+        // 从新建标记中移除
+        setNewlyCreatedGroups(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(groupId)
+          return newSet
+        })
+      }
+    } catch (error) {
+      console.error('Failed to delete group:', error)
+    }
+  }
+
   if (!mounted) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -736,7 +790,7 @@ export default function App() {
                       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
                       .map(group => {
                       const groupFeeds = feeds.filter(feed => feed.groupId === group.id)
-                      if (groupFeeds.length === 0) return null
+                      // 移除这个条件，让所有分组都显示，即使没有订阅源
                       
                       const isExpanded = expandedGroups.has(group.id)
                       
@@ -774,6 +828,18 @@ export default function App() {
                               <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-full">
                                 {groupFeeds.length}
                               </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  deleteGroup(group.id)
+                                }}
+                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-all duration-200"
+                                title="删除分组"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              </button>
                               <svg 
                                 className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${
                                   isExpanded ? 'rotate-180' : ''

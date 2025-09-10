@@ -311,5 +311,37 @@ export async function feedRoutes(app: FastifyInstance) {
       return reply.code(500).send({ error: 'Failed to preview webpage' });
     }
   });
+
+  // 删除分组
+  app.delete('/groups/:groupId', async (req, reply) => {
+    const { groupId } = req.params as { groupId: string };
+    const userId = (req as any).user?.sub as string;
+    
+    try {
+      // 检查分组是否存在且属于当前用户
+      const group = await prisma.group.findFirst({
+        where: { id: groupId, userId }
+      });
+      
+      if (!group) {
+        return reply.code(404).send({ error: 'Group not found' });
+      }
+      
+      // 将分组中的订阅源设为未分组
+      await prisma.feed.updateMany({
+        where: { groupId, userId },
+        data: { groupId: null }
+      });
+      
+      // 删除分组
+      await prisma.group.delete({
+        where: { id: groupId }
+      });
+      
+      return { success: true };
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to delete group' });
+    }
+  });
 }
 
