@@ -15,6 +15,7 @@ export default function App() {
   const [showGroupModal, setShowGroupModal] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [newlyCreatedGroups, setNewlyCreatedGroups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     console.log('App mounted')
@@ -272,6 +273,22 @@ export default function App() {
       if (response.ok) {
         const newGroup = await response.json()
         setGroups(prev => [...prev, newGroup])
+        
+        // 自动展开新创建的分组
+        setExpandedGroups(prev => new Set([...prev, newGroup.id]))
+        
+        // 标记为新创建的分组
+        setNewlyCreatedGroups(prev => new Set([...prev, newGroup.id]))
+        
+        // 3秒后移除"新建"标记
+        setTimeout(() => {
+          setNewlyCreatedGroups(prev => {
+            const newSet = new Set(prev)
+            newSet.delete(newGroup.id)
+            return newSet
+          })
+        }, 3000)
+        
         setNewGroupName('')
         setShowGroupModal(false)
       }
@@ -714,8 +731,10 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* 分组的订阅源 */}
-                    {groups.map(group => {
+                    {/* 分组的订阅源 - 按创建时间排序，最新的在前 */}
+                    {groups
+                      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                      .map(group => {
                       const groupFeeds = feeds.filter(feed => feed.groupId === group.id)
                       if (groupFeeds.length === 0) return null
                       
@@ -740,7 +759,14 @@ export default function App() {
                                 </svg>
                               </div>
                               <div className="text-left">
-                                <div className="font-semibold text-gray-900 text-sm">{group.name}</div>
+                                <div className="flex items-center space-x-2">
+                                  <span className="font-semibold text-gray-900 text-sm">{group.name}</span>
+                                  {newlyCreatedGroups.has(group.id) && (
+                                    <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full animate-pulse">
+                                      新建
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="text-xs text-gray-500">{groupFeeds.length} 个订阅源</div>
                               </div>
                             </div>
