@@ -21,14 +21,33 @@ export default function App() {
       console.log('Token loaded:', storedToken)
       
       if (storedToken) {
-        loadFeeds()
+        loadFeedsWithToken(storedToken)
       }
     } catch (error) {
       console.error('localStorage error:', error)
     }
   }, [])
 
+  const loadFeedsWithToken = async (authToken: string) => {
+    try {
+      const response = await fetch('/api/feeds', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setFeeds(data.feeds || data)
+      }
+    } catch (error) {
+      console.error('Failed to load feeds:', error)
+    }
+  }
+
   const loadFeeds = async () => {
+    if (!token) return
+    
     try {
       const response = await fetch('/api/feeds', {
         headers: {
@@ -38,7 +57,7 @@ export default function App() {
       
       if (response.ok) {
         const data = await response.json()
-        setFeeds(data)
+        setFeeds(data.feeds || data)
       }
     } catch (error) {
       console.error('Failed to load feeds:', error)
@@ -89,6 +108,8 @@ export default function App() {
   }
 
   const loadItems = async (feedId: string) => {
+    if (!token) return
+    
     try {
       const response = await fetch(`/api/feeds/${feedId}/items`, {
         headers: {
@@ -98,7 +119,7 @@ export default function App() {
       
       if (response.ok) {
         const data = await response.json()
-        setItems(data)
+        setItems(data.items || data)
         setSelectedFeedId(feedId)
       }
     } catch (error) {
@@ -118,7 +139,7 @@ export default function App() {
   }
 
   if (!token) {
-  return (
+    return (
       <div className="min-h-screen bg-black text-white relative overflow-hidden">
         {/* Apple 风格背景渐变 */}
         <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-black to-gray-800"></div>
