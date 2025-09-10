@@ -33,28 +33,55 @@ export async function feedRoutes(app: FastifyInstance) {
     const userId = (req as any).user?.sub as string;
 
     const { url } = parsed.data;
-    const feedData = await parser.parseURL(url);
-    const feed = await prisma.feed.create({ data: { userId, url, title: feedData.title || null } });
+    
+    try {
+      const feedData = await parser.parseURL(url);
+      console.log('RSS Feed Data:', {
+        title: feedData.title,
+        link: feedData.link,
+        description: feedData.description,
+        itemsCount: feedData.items?.length || 0
+      });
+      
+      // 尝试从多个字段获取标题
+      const feedTitle = feedData.title || 
+                       feedData.link?.replace(/^https?:\/\//, '').replace(/\/$/, '') || 
+                       '未命名订阅源';
+      
+      const feed = await prisma.feed.create({ 
+        data: { 
+          userId, 
+          url, 
+          title: feedTitle 
+        } 
+      });
 
-    if (feedData.items?.length) {
-      const toCreate = feedData.items.slice(0, 100).map((it) => ({
-        feedId: feed.id,
-        guid: it.guid || null,
-        link: it.link || null,
-        title: it.title || null,
-        content: (it.contentSnippet || it.content) || null,
-        published: it.isoDate ? new Date(it.isoDate) : null,
-      }));
-      for (const data of toCreate) {
-        await prisma.item.upsert({
-          where: { guid: data.guid ?? `guid:${Math.random()}` },
-          create: data,
-          update: data,
-        });
+      if (feedData.items?.length) {
+        const toCreate = feedData.items.slice(0, 100).map((it) => ({
+          feedId: feed.id,
+          guid: it.guid || null,
+          link: it.link || null,
+          title: it.title || null,
+          content: (it.contentSnippet || it.content) || null,
+          published: it.isoDate ? new Date(it.isoDate) : null,
+        }));
+        for (const data of toCreate) {
+          await prisma.item.upsert({
+            where: { guid: data.guid ?? `guid:${Math.random()}` },
+            create: data,
+            update: data,
+          });
+        }
       }
-    }
 
-    return { id: feed.id };
+      return { id: feed.id };
+    } catch (error) {
+      console.error('RSS Import Error:', error);
+      return reply.code(500).send({ 
+        error: 'Failed to import RSS feed',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   });
 
   app.get('/:id/items', async (req, reply) => {

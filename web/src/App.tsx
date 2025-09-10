@@ -66,6 +66,12 @@ export default function App() {
         const newFeed = await response.json()
         setFeeds(prev => [...prev, newFeed])
         setRssUrl('')
+        
+        // 自动加载新导入的RSS的文章
+        if (newFeed.id) {
+          await loadItems(newFeed.id)
+        }
+        
         // 显示成功消息
         alert('RSS 导入成功！')
       } else {
