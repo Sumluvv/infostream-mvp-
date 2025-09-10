@@ -195,13 +195,13 @@ export default function App() {
         if (response.ok) {
           const data = await response.json()
           const items = data.items || data
-          // 为每个文章添加feed信息
+          // 为每个文章添加feed信息，包括分组信息
           const itemsWithFeed = items.map((item: any) => ({
             ...item,
             feed: {
               id: feed.id,
               title: feed.title,
-              group: feed.group
+              group: feed.group || null
             }
           }))
           allItems.push(...itemsWithFeed)
@@ -640,19 +640,30 @@ export default function App() {
                           )}
                         </button>
                         <div className="flex items-center space-x-2 ml-2">
-                          <select
-                            value={feed.groupId || ''}
-                            onChange={(e) => updateFeedGroup(feed.id, e.target.value || null)}
-                            className="text-xs px-2 py-1 border border-gray-200 rounded-lg bg-white"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <option value="">无分组</option>
-                            {groups.map(group => (
-                              <option key={group.id} value={group.id}>
-                                {group.name}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="relative">
+                            <select
+                              value={feed.groupId || ''}
+                              onChange={(e) => updateFeedGroup(feed.id, e.target.value || null)}
+                              className="appearance-none text-xs px-3 py-2 pr-8 border border-gray-200 rounded-xl bg-white/80 hover:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 shadow-sm hover:shadow-md"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                backdropFilter: 'blur(10px)',
+                                WebkitBackdropFilter: 'blur(10px)'
+                              }}
+                            >
+                              <option value="">📁 选择分组</option>
+                              {groups.map(group => (
+                                <option key={group.id} value={group.id}>
+                                  📁 {group.name}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                              <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </div>
+                          </div>
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
@@ -660,12 +671,12 @@ export default function App() {
                                 deleteFeed(feed.id)
                               }
                             }}
-                            className="text-red-500 hover:text-red-700 p-1"
+                            className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-xl transition-all duration-200"
                           >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                             </svg>
-        </button>
+                          </button>
                         </div>
                       </div>
                     </div>
