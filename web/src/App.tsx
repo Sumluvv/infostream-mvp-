@@ -3,6 +3,13 @@ import { useState, useEffect } from 'react'
 export default function App() {
   const [mounted, setMounted] = useState(false)
   const [token, setToken] = useState<string | null>(null)
+  const [feeds, setFeeds] = useState<any[]>([])
+  const [items, setItems] = useState<any[]>([])
+  const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null)
+  const [rssUrl, setRssUrl] = useState('')
+  const [isImporting, setIsImporting] = useState(false)
+  const [showError, setShowError] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
 
   useEffect(() => {
     console.log('App mounted')
@@ -12,10 +19,86 @@ export default function App() {
       const storedToken = localStorage.getItem('token')
       setToken(storedToken)
       console.log('Token loaded:', storedToken)
+      
+      if (storedToken) {
+        loadFeeds()
+      }
     } catch (error) {
       console.error('localStorage error:', error)
     }
   }, [])
+
+  const loadFeeds = async () => {
+    try {
+      const response = await fetch('/api/feeds', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setFeeds(data)
+      }
+    } catch (error) {
+      console.error('Failed to load feeds:', error)
+    }
+  }
+
+  const importRSS = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!rssUrl.trim()) return
+    
+    setIsImporting(true)
+    setShowError(false)
+    
+    try {
+      const response = await fetch('/api/feeds/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ url: rssUrl })
+      })
+      
+      if (response.ok) {
+        const newFeed = await response.json()
+        setFeeds(prev => [...prev, newFeed])
+        setRssUrl('')
+        // 显示成功消息
+        alert('RSS 导入成功！')
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || '导入失败，请检查RSS链接是否正确')
+        setShowError(true)
+      }
+    } catch (error) {
+      console.error('Import error:', error)
+      setErrorMessage('网络错误，请检查网络连接或稍后重试')
+      setShowError(true)
+    } finally {
+      setIsImporting(false)
+    }
+  }
+
+  const loadItems = async (feedId: string) => {
+    try {
+      const response = await fetch(`/api/feeds/${feedId}/items`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setItems(data)
+        setSelectedFeedId(feedId)
+      }
+    } catch (error) {
+      console.error('Failed to load items:', error)
+    }
+  }
 
   if (!mounted) {
     return (
@@ -29,7 +112,7 @@ export default function App() {
   }
 
   if (!token) {
-    return (
+  return (
       <div className="min-h-screen bg-black text-white relative overflow-hidden">
         {/* Apple 风格背景渐变 */}
         <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-black to-gray-800"></div>
@@ -136,7 +219,7 @@ export default function App() {
                           required 
                         />
                       </div>
-                      <div>
+      <div>
                         <input 
                           name="password" 
                           type="password" 
@@ -224,22 +307,23 @@ export default function App() {
                   <p className="text-sm text-gray-500 mt-1">添加 RSS 订阅源</p>
                 </div>
               </div>
-              <form onSubmit={(e) => {
-                e.preventDefault()
-                alert('RSS 导入功能')
-              }} className="space-y-5">
+              <form onSubmit={importRSS} className="space-y-5">
                 <div>
                   <input 
+                    value={rssUrl}
+                    onChange={(e) => setRssUrl(e.target.value)}
                     placeholder="https://example.com/rss" 
                     className="w-full px-5 py-4 text-sm border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white/50 focus:bg-white placeholder-gray-400" 
                     required 
+                    disabled={isImporting}
                   />
                 </div>
                 <button 
                   type="submit"
-                  className="w-full bg-blue-600 text-white py-4 px-6 rounded-2xl font-semibold text-sm hover:bg-blue-700 transition-all duration-200 shadow-sm hover:shadow-md active:scale-95"
+                  disabled={isImporting}
+                  className="w-full bg-blue-600 text-white py-4 px-6 rounded-2xl font-semibold text-sm hover:bg-blue-700 transition-all duration-200 shadow-sm hover:shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  导入订阅源
+                  {isImporting ? '导入中...' : '导入订阅源'}
                 </button>
               </form>
             </div>
@@ -319,18 +403,37 @@ export default function App() {
                     <p className="text-sm text-gray-500 mt-1">管理你的信息源</p>
                   </div>
                 </div>
-                <span className="px-3 py-1 text-xs font-semibold bg-gray-100 text-gray-600 rounded-full">
-                  0
+                <span className="px-3 py-1 text-xs font-semibold bg-gray-100 text-gray-600 rounded-full">                        
+                  {feeds.length}
                 </span>
               </div>
-              <div className="text-center py-12 text-gray-500">
-                <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-2xl flex items-center justify-center">
-                  <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                  </svg>
-                </div>
-                <p className="text-sm font-semibold text-gray-700">暂无订阅源</p>
-                <p className="text-xs text-gray-400 mt-2">导入 RSS 链接开始使用</p>
+              <div className="space-y-2">
+                {feeds.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">              
+                    <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-2xl flex items-center justify-center">                
+                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">                  
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />               
+                      </svg>
+                    </div>
+                    <p className="text-sm font-semibold text-gray-700">暂无订阅源</p>                      
+                    <p className="text-xs text-gray-400 mt-2">导入 RSS 链接开始使用</p>                    
+                  </div>
+                ) : (
+                  feeds.map(feed => (
+                    <button
+                      key={feed.id}
+                      onClick={() => loadItems(feed.id)}
+                      className={`w-full text-left p-4 rounded-2xl text-sm transition-all duration-200 ${
+                        selectedFeedId === feed.id 
+                          ? 'bg-blue-50 border border-blue-200 text-blue-900' 
+                          : 'hover:bg-gray-50 border border-transparent'
+                      }`}
+                    >
+                      <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
+                      <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
+        </button>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -354,21 +457,99 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="max-h-[700px] overflow-y-auto">
-                <div className="text-center py-24">
-                  <div className="w-20 h-20 mx-auto mb-6 bg-gray-100 rounded-3xl flex items-center justify-center">
-                    <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
+              <div className="max-h-[700px] overflow-y-auto">                
+                {items.length === 0 ? (
+                  <div className="text-center py-24">
+                    <div className="w-20 h-20 mx-auto mb-6 bg-gray-100 rounded-3xl flex items-center justify-center">              
+                      <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">              
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />                     
+                      </svg>                         
+                    </div>
+                    <h3 className="text-xl font-semibold text-gray-900 mb-3">选择订阅源</h3>             
+                    <p className="text-gray-500 text-lg">点击左侧订阅源查看文章列表</p>                  
                   </div>
-                  <h3 className="text-xl font-semibold text-gray-900 mb-3">选择订阅源</h3>
-                  <p className="text-gray-500 text-lg">点击左侧订阅源查看文章列表</p>
-                </div>
+                ) : (
+                  <div className="divide-y divide-gray-200">
+                    {items.map(item => (
+                      <div key={item.id} className="p-6 hover:bg-gray-50 transition-colors">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1 min-w-0">
+                            <h3 className="text-lg font-medium text-gray-900 mb-2 line-clamp-2">
+                              {item.title}
+                            </h3>
+                            <p className="text-sm text-gray-600 mb-3 line-clamp-3">
+                              {item.content}
+                            </p>
+                            <div className="flex items-center text-xs text-gray-500">
+                              <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              {new Date(item.published).toLocaleDateString('zh-CN', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </div>
+                          </div>
+                          {item.link && (
+                            <a
+                              href={item.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="ml-4 flex-shrink-0 inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+                            >
+                              阅读原文
+                              <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {/* 错误弹窗 */}
+      {showError && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-center mb-4">
+              <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center mr-3">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">导入失败</h3>
+            </div>
+            <p className="text-gray-600 mb-6">{errorMessage}</p>
+            <div className="flex space-x-3">
+              <button
+                onClick={() => setShowError(false)}
+                className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                关闭
+              </button>
+              <button
+                onClick={() => {
+                  setShowError(false)
+                  setRssUrl('')
+                }}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                重试
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
