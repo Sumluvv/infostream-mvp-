@@ -183,9 +183,21 @@ export default function App() {
     if (!token) return
     
     try {
+      // 先获取最新的feeds数据（包含分组信息）
+      const feedsResponse = await fetch('/api/feeds', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (!feedsResponse.ok) return
+      
+      const feedsData = await feedsResponse.json()
+      const currentFeeds = feedsData.feeds || feedsData
+      
       // 获取所有订阅源的文章
       const allItems = []
-      for (const feed of feeds) {
+      for (const feed of currentFeeds) {
         const response = await fetch(`/api/feeds/${feed.id}/items`, {
           headers: {
             'Authorization': `Bearer ${token}`
