@@ -16,6 +16,22 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState('')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [newlyCreatedGroups, setNewlyCreatedGroups] = useState<Set<string>>(new Set())
+  
+  // 网页转RSS相关状态
+  const [webpageUrl, setWebpageUrl] = useState('')
+  const [showWebpageModal, setShowWebpageModal] = useState(false)
+  const [isScraping, setIsScraping] = useState(false)
+  const [scrapedData, setScrapedData] = useState<any>(null)
+  const [selectors, setSelectors] = useState({
+    title: '',
+    content: '',
+    link: '',
+    time: ''
+  })
+  const [detectedCategories, setDetectedCategories] = useState<any[]>([])
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set())
+  const [showCategorySelection, setShowCategorySelection] = useState(false)
+  const [expandedCategoryNames, setExpandedCategoryNames] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     console.log('App mounted')
@@ -388,6 +404,157 @@ export default function App() {
     }
   }
 
+  // 网页转RSS相关函数
+  const detectCategories = async () => {
+    if (!webpageUrl.trim()) return
+    
+    setIsScraping(true)
+    try {
+      // 同时获取网页快照和分类信息
+      const [snapshotResponse, categoriesResponse] = await Promise.all([
+        fetch('/api/feeds/webpage-snapshot', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ url: webpageUrl })
+        }),
+        fetch('/api/feeds/webpage-categories', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ url: webpageUrl })
+        })
+      ])
+      
+      if (snapshotResponse.ok && categoriesResponse.ok) {
+        const snapshotData = await snapshotResponse.json()
+        const categoriesData = await categoriesResponse.json()
+        
+        setScrapedData(snapshotData)
+        setDetectedCategories(categoriesData.categories || [])
+        setShowCategorySelection(true)
+      } else {
+        const errorData = await snapshotResponse.json()
+        setErrorMessage(errorData.message || '网页分析失败')
+        setShowError(true)
+      }
+    } catch (error) {
+      console.error('Category detection error:', error)
+      setErrorMessage('网络错误，请检查网络连接')
+      setShowError(true)
+    } finally {
+      setIsScraping(false)
+    }
+  }
+
+  const createCategoryRSS = async () => {
+    if (!token || selectedCategories.size === 0) return
+    
+    setIsScraping(true)
+    try {
+      const selectedCategoryData = detectedCategories.filter(cat => 
+        selectedCategories.has(cat.name)
+      )
+      
+      const response = await fetch('/api/feeds/webpage-categories-rss', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          url: webpageUrl,
+          categories: selectedCategoryData.map(cat => ({
+            name: cat.name,
+            articles: cat.articles || []
+          }))
+        })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setFeeds(prev => [...prev, ...data.feeds])
+        
+        // 关闭模态框并重置状态
+        setShowWebpageModal(false)
+        setShowCategorySelection(false)
+        setWebpageUrl('')
+        setDetectedCategories([])
+        setSelectedCategories(new Set())
+        setScrapedData(null)
+        
+        alert(`成功创建 ${data.feeds.length} 个分类RSS订阅源！`)
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || '创建分类RSS失败')
+        setShowError(true)
+      }
+    } catch (error) {
+      console.error('Category RSS creation error:', error)
+      setErrorMessage('网络错误，请检查网络连接')
+      setShowError(true)
+    } finally {
+      setIsScraping(false)
+    }
+  }
+
+  const createWebpageRSS = async () => {
+    if (!webpageUrl.trim() || !selectors.title.trim()) return
+    
+    setIsScraping(true)
+    try {
+      const response = await fetch('/api/feeds/webpage-to-rss', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          url: webpageUrl,
+          selectors: {
+            title: selectors.title,
+            content: selectors.content,
+            link: selectors.link,
+            time: selectors.time
+          }
+        })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setFeeds(prev => [...prev, { 
+          id: data.id, 
+          title: `网页抓取: ${new URL(webpageUrl).hostname}`,
+          url: webpageUrl,
+          groupId: null,
+          group: null
+        }])
+        
+        // 关闭模态框并重置状态
+        setShowWebpageModal(false)
+        setWebpageUrl('')
+        setSelectors({ title: '', content: '', link: '', time: '' })
+        setScrapedData(null)
+        
+        alert('网页转RSS成功！')
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || '网页转RSS失败')
+        setShowError(true)
+      }
+    } catch (error) {
+      console.error('Webpage to RSS error:', error)
+      setErrorMessage('网络错误，请检查网络连接')
+      setShowError(true)
+    } finally {
+      setIsScraping(false)
+    }
+  }
+
   if (!mounted) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -645,10 +812,13 @@ export default function App() {
               </div>
               <form onSubmit={(e) => {
                 e.preventDefault()
-                alert('网页转 RSS 功能')
+                const target = e.target as HTMLFormElement
+                setWebpageUrl((target.elements.namedItem('url') as HTMLInputElement).value)
+                setShowWebpageModal(true)
               }} className="space-y-5">
                 <div>
                   <input 
+                    name="url"
                     placeholder="https://example.com/news" 
                     className="w-full px-5 py-4 text-sm border border-gray-200 rounded-2xl focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 bg-white/50 focus:bg-white placeholder-gray-400" 
                     required 
@@ -658,7 +828,7 @@ export default function App() {
                   type="submit"
                   className="w-full bg-purple-600 text-white py-4 px-6 rounded-2xl font-semibold text-sm hover:bg-purple-700 transition-all duration-200 shadow-sm hover:shadow-md active:scale-95"
                 >
-                  预览网页
+                  智能分类
                 </button>
               </form>
             </div>
@@ -969,7 +1139,7 @@ export default function App() {
                       }`}
                     >
                       📁 {group.name}
-                    </button>
+        </button>
                   ))}
                 </div>
               </div>
@@ -1051,6 +1221,209 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* 网页转RSS模态框 */}
+      {showWebpageModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                    <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-gray-900">网页转RSS</h3>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowWebpageModal(false)
+                    setWebpageUrl('')
+                    setSelectors({ title: '', content: '', link: '', time: '' })
+                    setScrapedData(null)
+                  }}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 max-h-[calc(90vh-120px)] overflow-y-auto">
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">网页地址</label>
+                  <div className="flex space-x-3">
+                    <input
+                      type="url"
+                      value={webpageUrl}
+                      onChange={(e) => setWebpageUrl(e.target.value)}
+                      placeholder="https://example.com/news"
+                      className="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      required
+                      readOnly
+                    />
+                    <button
+                      type="button"
+                      onClick={detectCategories}
+                      disabled={!webpageUrl.trim() || isScraping}
+                      className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '检测中...' : '智能分类'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 网页快照 */}
+                {scrapedData && (
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-medium text-gray-700">网页快照</h4>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <img 
+                        src={scrapedData.screenshot} 
+                        alt="网页快照" 
+                        className="w-full h-auto"
+                        style={{ maxHeight: '400px', objectFit: 'contain' }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* 智能分类选择 */}
+                {showCategorySelection && detectedCategories.length > 0 && (
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-medium text-gray-700">选择要创建RSS的分类</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {detectedCategories.map((category, index) => {
+                        const isExpanded = expandedCategoryNames.has(category.name)
+                        const total = category.articles ? category.articles.length : 0
+                        const list = category.articles ? (isExpanded ? category.articles : category.articles.slice(0, 3)) : []
+                        return (
+                          <div key={index} className="border border-gray-200 rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <label className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedCategories.has(category.name)}
+                                  onChange={(e) => {
+                                    const newSelected = new Set(selectedCategories)
+                                    if (e.target.checked) {
+                                      newSelected.add(category.name)
+                                    } else {
+                                      newSelected.delete(category.name)
+                                    }
+                                    setSelectedCategories(newSelected)
+                                  }}
+                                  className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                                />
+                                <span className="text-sm font-medium text-gray-900">{category.name}</span>
+                              </label>
+                              <div className="flex items-center space-x-3">
+                                <span className="text-xs text-gray-500">
+                                  {total} 篇文章
+                                </span>
+                                {total > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const next = new Set(expandedCategoryNames)
+                                      if (next.has(category.name)) next.delete(category.name)
+                                      else next.add(category.name)
+                                      setExpandedCategoryNames(next)
+                                    }}
+                                    className="text-xs text-purple-600 hover:text-purple-700"
+                                  >
+                                    {isExpanded ? '收起' : '展开'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {list && list.map((article: any, articleIndex: number) => (
+                              <div key={articleIndex} className="text-xs text-gray-700 bg-gray-50 p-2 rounded border mb-1">
+                                {article.title || article.text || article.link}
+                              </div>
+                            ))}
+                            {total > 3 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next = new Set(expandedCategoryNames)
+                                  if (next.has(category.name)) next.delete(category.name)
+                                  else next.add(category.name)
+                                  setExpandedCategoryNames(next)
+                                }}
+                                className="text-[11px] text-purple-600 mt-1 hover:text-purple-700"
+                              >
+                                {isExpanded ? '收起' : '展开可查看全部'}
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => {
+                          const allNames = detectedCategories.map(cat => cat.name)
+                          setSelectedCategories(new Set(allNames))
+                        }}
+                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                      >
+                        全选
+                      </button>
+                      <button
+                        onClick={() => setSelectedCategories(new Set())}
+                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                      >
+                        全不选
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 操作按钮 */}
+                <div className="flex space-x-3 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={() => {
+                      setShowWebpageModal(false)
+                      setShowCategorySelection(false)
+                      setWebpageUrl('')
+                      setSelectors({ title: '', content: '', link: '', time: '' })
+                      setScrapedData(null)
+                      setDetectedCategories([])
+                      setSelectedCategories(new Set())
+                    }}
+                    className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    取消
+                  </button>
+                  
+                  {showCategorySelection ? (
+                    <button
+                      onClick={createCategoryRSS}
+                      disabled={selectedCategories.size === 0 || isScraping}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '创建中...' : `创建 ${selectedCategories.size} 个分类RSS`}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={createWebpageRSS}
+                      disabled={!webpageUrl.trim() || !selectors.title.trim() || isScraping}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '创建中...' : '创建RSS订阅源'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 错误弹窗 */}
       {showError && (

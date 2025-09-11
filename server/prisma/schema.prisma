@@ -36,6 +36,7 @@ model Feed {
   group      Group?   @relation(fields: [groupId], references: [id])
   url        String
   title      String?
+  type       String   @default("rss")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   items      Item[]
