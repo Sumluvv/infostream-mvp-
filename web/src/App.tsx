@@ -22,6 +22,11 @@ export default function App() {
   const [showWebpageModal, setShowWebpageModal] = useState(false)
   const [isScraping, setIsScraping] = useState(false)
   const [scrapedData, setScrapedData] = useState<any>(null)
+  // 快照缩放/拖动
+  const [snapScale, setSnapScale] = useState(1)
+  const [snapOffset, setSnapOffset] = useState({ x: 0, y: 0 })
+  const [snapDragging, setSnapDragging] = useState(false)
+  const [snapDragStart, setSnapDragStart] = useState<{x:number;y:number}|null>(null)
   const [selectors, setSelectors] = useState({
     title: '',
     content: '',
@@ -32,6 +37,19 @@ export default function App() {
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set())
   const [showCategorySelection, setShowCategorySelection] = useState(false)
   const [expandedCategoryNames, setExpandedCategoryNames] = useState<Set<string>>(new Set())
+
+  // 新版：分段分组与拖拽替代（用选择勾选实现最小可用）
+  const [segGroups, setSegGroups] = useState<any[]>([])
+  const [segGroupsLocal, setSegGroupsLocal] = useState<any[]>([])
+  const [segExpandedSet, setSegExpandedSet] = useState<Set<number>>(new Set())
+  const [selectedSegGroupIdx, setSelectedSegGroupIdx] = useState<number | null>(null)
+  const [selectedArticleIdxSet, setSelectedArticleIdxSet] = useState<Set<number>>(new Set())
+  // 拖拽版：统一词条池（右侧）+ 左侧上下框
+  const [dragSelectedTitle, setDragSelectedTitle] = useState<string | null>(null) // 存 titleToken 文本
+  const [dragSelectedArticles, setDragSelectedArticles] = useState<any[]>([])
+  // 创建进度条
+  const [creatingProgress, setCreatingProgress] = useState(0)
+  const [isCreating, setIsCreating] = useState(false)
 
   useEffect(() => {
     console.log('App mounted')
@@ -410,41 +428,111 @@ export default function App() {
     
     setIsScraping(true)
     try {
-      // 同时获取网页快照和分类信息
-      const [snapshotResponse, categoriesResponse] = await Promise.all([
-        fetch('/api/feeds/webpage-snapshot', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ url: webpageUrl })
-        }),
-        fetch('/api/feeds/webpage-categories', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ url: webpageUrl })
-        })
-      ])
-      
-      if (snapshotResponse.ok && categoriesResponse.ok) {
-        const snapshotData = await snapshotResponse.json()
-        const categoriesData = await categoriesResponse.json()
-        
-        setScrapedData(snapshotData)
-        setDetectedCategories(categoriesData.categories || [])
+      // 1) 先拿分段结果，立即展示
+      const segResp = await fetch('/api/feeds/webpage-segmentation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ url: webpageUrl })
+      })
+      if (segResp.ok) {
+        const segData = await segResp.json()
+        const groups = segData.groups || []
+        setSegGroups(groups)
+        setSegGroupsLocal(groups.map((g: any) => ({ ...g, articles: [...(g.articles || [])] })))
+        setSegExpandedSet(new Set())
+        setSelectedSegGroupIdx(null)
+        setSelectedArticleIdxSet(new Set())
         setShowCategorySelection(true)
-      } else {
-        const errorData = await snapshotResponse.json()
-        setErrorMessage(errorData.message || '网页分析失败')
-        setShowError(true)
       }
+
+      // 2) 若分组为空，回退到“智能分类”接口产出分组
+      if ((segGroups.length === 0)) {
+        try {
+          const catResp = await fetch('/api/feeds/webpage-categories', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ url: webpageUrl })
+          })
+          if (catResp.ok) {
+            const catData = await catResp.json()
+            const mapped = (catData.categories || []).map((c: any) => ({
+              titleToken: c.name,
+              heading: c.name,
+              articles: (c.articles || [])
+            }))
+            setSegGroups(mapped)
+            setSegGroupsLocal(mapped.map((g: any) => ({ ...g, articles: [...(g.articles || [])] })))
+            setShowCategorySelection(true)
+          }
+        } catch {}
+      }
+
+      // 3) 再异步拉快照，不阻塞分组显示
+      fetch('/api/feeds/webpage-snapshot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ url: webpageUrl })
+      }).then(async r => {
+        if (r.ok) {
+          const d = await r.json()
+          setScrapedData(d)
+        }
+      }).catch(() => {})
     } catch (error) {
       console.error('Category detection error:', error)
       setErrorMessage('网络错误，请检查网络连接')
+      setShowError(true)
+    } finally {
+      setIsScraping(false)
+    }
+  }
+
+  // 新版：根据选择构建 RSS
+  const buildFromSegSelection = async () => {
+    if (!token) return
+    if (selectedSegGroupIdx === null) {
+      alert('请先选择一个标题词条组')
+      return
+    }
+    const group = segGroups[selectedSegGroupIdx]
+    const chosen = group?.articles || []
+    const filtered = chosen.filter((_: any, idx: number) => selectedArticleIdxSet.size === 0 || selectedArticleIdxSet.has(idx))
+    if (filtered.length === 0) {
+      alert('请至少选择一篇文章')
+      return
+    }
+    try {
+      setIsScraping(true)
+      const resp = await fetch('/api/feeds/webpage-build-rss', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          url: webpageUrl,
+          titleToken: group.titleToken || group.heading || '未命名',
+          articles: filtered.map((a: any) => ({ title: a.title || a.text || '无标题', link: a.link, pubDate: a.pubDate }))
+        })
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setFeeds(prev => [...prev, { id: data.id, title: data.title, url: webpageUrl, groupId: null, group: null }])
+        setShowWebpageModal(false)
+        setShowCategorySelection(false)
+        setWebpageUrl('')
+        setSegGroups([])
+        setSelectedSegGroupIdx(null)
+        setSelectedArticleIdxSet(new Set())
+        setScrapedData(null)
+        alert('RSS 创建成功！')
+      } else {
+        const err = await resp.json().catch(() => ({}))
+        setErrorMessage(err.message || '创建失败')
+        setShowError(true)
+      }
+    } catch (e) {
+      setErrorMessage('网络错误，请稍后重试')
       setShowError(true)
     } finally {
       setIsScraping(false)
@@ -556,7 +644,7 @@ export default function App() {
   }
 
   if (!mounted) {
-    return (
+  return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
           <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
@@ -622,11 +710,30 @@ export default function App() {
                       <p className="text-gray-300">登录或注册账户</p>
                     </div>
 
-                    <form onSubmit={(e) => {
+                    <form onSubmit={async (e) => {
                       e.preventDefault()
-                      console.log('Login form submitted')
-                      localStorage.setItem('token', 'test-token')
-                      setToken('test-token')
+                      const form = e.target as HTMLFormElement
+                      const email = (form.elements.namedItem('email') as HTMLInputElement).value
+                      const password = (form.elements.namedItem('password') as HTMLInputElement).value
+                      try {
+                        const resp = await fetch('/api/auth/login', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email, password })
+                        })
+                        if (!resp.ok) {
+                          const err = await resp.json().catch(() => ({} as any))
+                          alert(err.message || '登录失败')
+                          return
+                        }
+                        const data = await resp.json()
+                        localStorage.setItem('token', data.token)
+                        setToken(data.token)
+                        loadFeedsWithToken(data.token)
+                        loadGroupsWithToken(data.token)
+                      } catch (err) {
+                        alert('网络错误，请稍后重试')
+                      }
                     }} className="space-y-4">
                       <div>
                         <input 
@@ -660,10 +767,40 @@ export default function App() {
                       </div>
                     </div>
 
-                    <form onSubmit={(e) => {
+                    <form onSubmit={async (e) => {
                       e.preventDefault()
-                      console.log('Signup form submitted')
-                      alert('注册成功！请登录')
+                      const form = e.target as HTMLFormElement
+                      const email = (form.elements.namedItem('email') as HTMLInputElement).value
+                      const password = (form.elements.namedItem('password') as HTMLInputElement).value
+                      try {
+                        const resp = await fetch('/api/auth/signup', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email, password })
+                        })
+                        if (!resp.ok) {
+                          const err = await resp.json().catch(() => ({} as any))
+                          alert(err.error || '注册失败')
+                          return
+                        }
+                        // 注册成功后自动登录
+                        const loginResp = await fetch('/api/auth/login', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email, password })
+                        })
+                        if (loginResp.ok) {
+                          const data = await loginResp.json()
+                          localStorage.setItem('token', data.token)
+                          setToken(data.token)
+                          loadFeedsWithToken(data.token)
+                          loadGroupsWithToken(data.token)
+                        } else {
+                          alert('注册成功，但自动登录失败，请手动登录')
+                        }
+                      } catch (err) {
+                        alert('网络错误，请稍后重试')
+                      }
                     }} className="space-y-4">
                       <div>
                         <input 
@@ -1110,10 +1247,10 @@ export default function App() {
             >
               <div className="p-8 border-b border-gray-200/50">              
                 <div className="flex items-center justify-between mb-4">          
-                  <div>
+      <div>
                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">文章列表</h2>  
                     <p className="text-sm text-gray-500 mt-1">浏览最新内容</p>                         
-                  </div>
+      </div>
                 </div>
                 
                 {/* 分组选择器 */}
@@ -1127,7 +1264,7 @@ export default function App() {
                     }`}
                   >
                     全部
-                  </button>
+        </button>
                   {groups.map(group => (
                     <button
                       key={group.id}
@@ -1141,7 +1278,7 @@ export default function App() {
                       📁 {group.name}
         </button>
                   ))}
-                </div>
+      </div>
               </div>
               <div className="max-h-[700px] overflow-y-auto">                
                 {items.length === 0 ? (
@@ -1281,18 +1418,213 @@ export default function App() {
                 {scrapedData && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium text-gray-700">网页快照</h4>
-                    <div className="border border-gray-200 rounded-lg overflow-hidden">
-                      <img 
-                        src={scrapedData.screenshot} 
-                        alt="网页快照" 
-                        className="w-full h-auto"
-                        style={{ maxHeight: '400px', objectFit: 'contain' }}
-                      />
+                    <div
+                      className="border border-gray-200 rounded-lg overflow-hidden relative select-none"
+                      onWheel={(e)=>{
+                        e.preventDefault()
+                        const delta = e.deltaY > 0 ? -0.1 : 0.1
+                        setSnapScale(s=>Math.min(3, Math.max(0.2, Number((s+delta).toFixed(2)))))
+                      }}
+                      onMouseDown={(e)=>{
+                        setSnapDragging(true)
+                        setSnapDragStart({ x: e.clientX - snapOffset.x, y: e.clientY - snapOffset.y })
+                      }}
+                      onMouseMove={(e)=>{
+                        if(!snapDragging || !snapDragStart) return
+                        setSnapOffset({ x: e.clientX - snapDragStart.x, y: e.clientY - snapDragStart.y })
+                      }}
+                      onMouseUp={()=> setSnapDragging(false)}
+                      onMouseLeave={()=> setSnapDragging(false)}
+                      style={{ height: 400, cursor: snapDragging ? 'grabbing' : 'grab' }}
+                    >
+                      <div
+                        style={{
+                          transform: `translate(${snapOffset.x}px, ${snapOffset.y}px) scale(${snapScale})`,
+                          transformOrigin: '0 0'
+                        }}
+                      >
+                        <img src={scrapedData.screenshot} alt="网页快照" draggable={false} />
+                      </div>
+                      <div className="absolute bottom-2 right-2 flex items-center space-x-2 bg-white/80 border rounded px-2 py-1">
+                        <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.max(0.2, Number((s-0.1).toFixed(2))))}>-</button>
+                        <span className="text-xs w-10 text-center">{Math.round(snapScale*100)}%</span>
+                        <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.min(3, Number((s+0.1).toFixed(2))))}>+</button>
+                        <button className="px-2 text-xs" onClick={()=>{setSnapScale(1); setSnapOffset({x:0,y:0})}}>重置</button>
+                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* 智能分类选择 */}
+                {/* 新版：分段选择（标题词条 + 文章词条） */}
+                {showCategorySelection && segGroups.length > 0 && (
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-medium text-gray-700">拖拽选择：左侧上框拖入1个标题词条，下框拖入多篇文章词条</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* 左：上下两个拖入框 */}
+                      <div className="md:col-span-1 space-y-3">
+                        <div
+                          onDragOver={(e)=>e.preventDefault()}
+                          onDrop={(e)=>{
+                            e.preventDefault()
+                            const type = e.dataTransfer.getData('type')
+                            const payload = e.dataTransfer.getData('payload')
+                            if(type==='title'){
+                              setDragSelectedTitle(payload)
+                            }
+                          }}
+                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[64px] flex items-center justify-between bg-purple-50/40"
+                        >
+                          <div className="text-xs text-gray-700 font-medium">标题（仅1个）</div>
+                          <div className="text-xs text-gray-900 font-medium truncate max-w-[60%]">{dragSelectedTitle || '拖入标题词条'}</div>
+                        </div>
+                        <div
+                          onDragOver={(e)=>e.preventDefault()}
+                          onDrop={(e)=>{
+                            e.preventDefault()
+                            const type = e.dataTransfer.getData('type')
+                            const payload = e.dataTransfer.getData('payload')
+                            if(type==='article'){
+                              try{
+                                const art = JSON.parse(payload)
+                                setDragSelectedArticles(prev=>{
+                                  if(prev.find(x=>x.link===art.link)) return prev
+                                  return [...prev, art]
+                                })
+                              }catch{}
+                            } else if (type==='group') {
+                              try {
+                                const data = JSON.parse(payload)
+                                const gi = data.groupIndex
+                                const groupArts = segGroupsLocal[gi]?.articles || []
+                                setDragSelectedArticles(prev => {
+                                  const exist = new Set(prev.map(x=>x.link))
+                                  const merged = [...prev]
+                                  for (const a of groupArts) {
+                                    if (a.link && !exist.has(a.link)) merged.push(a)
+                                  }
+                                  return merged
+                                })
+                              } catch {}
+                            }
+                          }}
+                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[160px] bg-purple-50/30"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs text-gray-700 font-medium">文章内容（可多个）</div>
+                            <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
+                          </div>
+                          <div className="space-y-1 max-h-56 overflow-auto">
+                            {dragSelectedArticles.map((a,i)=> (
+                              <div key={i} className="text-xs bg-gray-50 p-2 rounded border flex items-center justify-between">
+                                <span className="truncate mr-2">{a.title || a.text || a.link}</span>
+                                <button className="text-[11px] text-red-500" title="移除" aria-label="移除" onClick={()=>setDragSelectedArticles(prev=>prev.filter((_,idx)=>idx!==i))}>-</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      {/* 右：统一候选池（标题 + 文章组） */}
+                      <div className="md:col-span-2 border border-gray-200 rounded-lg p-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-xs text-gray-700 font-medium mb-2">标题词条（可拖动到左上框）</div>
+                            <div className="space-y-2 max-h-64 overflow-auto">
+                              {segGroupsLocal.map((g, idx) => (
+                                <div
+                                  key={idx}
+                                  draggable
+                                  onDragStart={(e)=>{
+                                    e.dataTransfer.setData('type','title')
+                                    e.dataTransfer.setData('payload', g.titleToken || g.heading || '未命名')
+                                  }}
+                                  className="text-xs px-3 py-2 rounded border bg-purple-50 cursor-move"
+                                  title="拖拽到左上框作为标题"
+                                >
+                                  {g.titleToken || g.heading}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="text-xs text-gray-700 font-medium">文章词条（分组展示，可拖拽整组到左下框）</div>
+                              <div className="space-x-2">
+                                <button className="text-[11px] text-gray-600" onClick={()=>{
+                                  const all = segGroupsLocal.flatMap(g=>g.articles||[])
+                                  setDragSelectedArticles(prev=>{
+                                    const exist = new Set(prev.map(x=>x.link))
+                                    const merged = [...prev]
+                                    for(const a of all){ if(a.link && !exist.has(a.link)) merged.push(a) }
+                                    return merged
+                                  })
+                                }}>全选</button>
+                                <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
+                              </div>
+                            </div>
+                            <div className="space-y-3 max-h-64 overflow-auto">
+                              {segGroupsLocal.map((g, gi) => {
+                                const expanded = segExpandedSet.has(gi)
+                                const articles = g.articles || []
+                                const preview = articles[0]
+                                return (
+                                  <div key={gi} className="border rounded-lg">
+                                    <div className="flex items-center justify-between px-2 py-2 bg-gray-50 border-b">
+                                      <div className="text-xs font-medium truncate">{g.titleToken || g.heading}</div>
+                                      <div className="flex items-center space-x-2">
+                                        <span className="text-[11px] text-gray-500">{articles.length} 篇</span>
+                                        <button className="text-[11px] text-purple-600" onClick={()=>{
+                                          setSegExpandedSet(prev=>{
+                                            const next = new Set(prev)
+                                            if(next.has(gi)) next.delete(gi); else next.add(gi)
+                                            return next
+                                          })
+                                        }}>{expanded?'收起':'展开'}</button>
+                                        <div
+                                          draggable
+                                          onDragStart={(e)=>{
+                                            e.dataTransfer.setData('type','group')
+                                            e.dataTransfer.setData('payload', JSON.stringify({ groupIndex: gi }))
+                                          }}
+                                          className="text-[11px] text-blue-600 cursor-move"
+                                          title="拖拽整组到左下框"
+                                        >拖整组</div>
+                                      </div>
+                                    </div>
+                                    <div className="p-2">
+                                      {preview && (
+                                        <div className="text-xs bg-white p-2 rounded border mb-1">{preview.title || preview.text || preview.link}</div>
+                                      )}
+                                      {expanded && (
+                                        <div className="space-y-1">
+                                          {articles.slice(1).map((a:any, ai:number) => (
+                                            <div
+                                              key={ai}
+                                              draggable
+                                              onDragStart={(e)=>{
+                                                e.dataTransfer.setData('type','article')
+                                                e.dataTransfer.setData('payload', JSON.stringify(a))
+                                              }}
+                                              className="text-xs bg-gray-50 p-2 rounded border cursor-move"
+                                              title="拖拽到左下框或其他组"
+                                            >
+                                              {a.title || a.text || a.link}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 旧版：智能分类（保留以兼容） */}
                 {showCategorySelection && detectedCategories.length > 0 && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium text-gray-700">选择要创建RSS的分类</h4>
@@ -1401,7 +1733,67 @@ export default function App() {
                     取消
                   </button>
                   
-                  {showCategorySelection ? (
+                  {showCategorySelection && segGroups.length>0 ? (
+                    <button
+                      onClick={async ()=>{
+                        if (!token) return
+                        if (!dragSelectedTitle) { alert('请先拖入一个标题词条'); return }
+                        const validArticles = dragSelectedArticles.filter(a=>a && a.link)
+                        if (validArticles.length===0) { alert('请拖入至少一篇带链接的文章词条'); return }
+                        try{
+                          setIsScraping(true)
+                          setIsCreating(true)
+                          setCreatingProgress(10)
+                          const timer = setInterval(()=>{
+                            setCreatingProgress(p=> (p<90? p+5 : p))
+                          }, 200)
+                          const resp = await fetch('/api/feeds/webpage-build-rss', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                            body: JSON.stringify({
+                              url: webpageUrl,
+                              titleToken: dragSelectedTitle,
+                              articles: validArticles.map((a:any)=>({ title: a.title || a.text || '无标题', link: a.link, pubDate: a.pubDate }))
+                            })
+                          })
+                          if(resp.ok){
+                            setCreatingProgress(100)
+                            const data = await resp.json()
+                            setFeeds(prev => [...prev, { id: data.id, title: data.title, url: webpageUrl, groupId: null, group: null }])
+                            setShowWebpageModal(false)
+                            setShowCategorySelection(false)
+                            setWebpageUrl('')
+                            setSegGroups([])
+                            setDragSelectedTitle(null)
+                            setDragSelectedArticles([])
+                            setScrapedData(null)
+                            alert('RSS 创建成功！')
+                          } else {
+                            const errText = await resp.text().catch(()=> '')
+                            let msg = '创建失败'
+                            try { const j = JSON.parse(errText); msg = j.message || msg } catch {}
+                            setErrorMessage(msg)
+                            setShowError(true)
+                          }
+                          setTimeout(()=>{ setIsCreating(false); setCreatingProgress(0) }, 400)
+                          
+                          
+                        } finally {
+                          setIsScraping(false)
+                        }
+                      }}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isCreating ? (
+                        <span className="w-full inline-flex items-center">
+                          <span className="mr-2">创建中</span>
+                          <span className="flex-1 h-2 bg-white/20 rounded overflow-hidden">
+                            <span className="h-2 bg-white block transition-all" style={{ width: `${creatingProgress}%` }}></span>
+                          </span>
+                        </span>
+                      ) : '根据选择创建RSS'}
+                    </button>
+                  ) : showCategorySelection ? (
                     <button
                       onClick={createCategoryRSS}
                       disabled={selectedCategories.size === 0 || isScraping}

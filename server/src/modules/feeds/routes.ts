@@ -14,12 +14,31 @@ let updateInterval: NodeJS.Timeout | null = null;
 // 更新RSS订阅源
 async function updateRSSFeeds() {
   try {
-    const feeds = await prisma.feed.findMany({
-      include: { items: true }
-    });
+    const feeds = await prisma.feed.findMany({ include: { items: true } });
 
     for (const feed of feeds) {
       try {
+        // 仅在明确为 RSS/XML 时才解析，避免将普通网页当作 RSS
+        let canParse = false;
+        try {
+          const headResp = await fetch(feed.url, { method: 'HEAD', timeout: 10000 });
+          const ct = headResp.headers.get('content-type') || '';
+          if (/xml|rss|atom/i.test(ct)) canParse = true;
+        } catch {
+          // 某些站点不支持 HEAD，再用 GET 探测前 1KB
+          try {
+            const getResp = await fetch(feed.url, { method: 'GET', timeout: 10000 });
+            const ct = getResp.headers.get('content-type') || '';
+            if (/xml|rss|atom/i.test(ct)) canParse = true;
+          } catch {}
+        }
+
+        // 粗略规则：URL 后缀包含 .xml/.rss 也视作可解析
+        if (!canParse && /\.(xml|rss)(\?|#|$)/i.test(feed.url)) canParse = true;
+        if (!canParse) {
+          continue;
+        }
+
         const feedData = await parser.parseURL(feed.url);
         
         if (feedData.items) {
@@ -46,7 +65,9 @@ async function updateRSSFeeds() {
           }
         }
       } catch (error) {
-        console.error(`更新RSS失败 ${feed.title}:`, error);
+        // 降噪：仅记录简短信息
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`更新RSS失败 ${feed.title}: ${msg}`);
       }
     }
   } catch (error) {
@@ -54,7 +75,98 @@ async function updateRSSFeeds() {
   }
 }
 
-// 更新网页RSS订阅源
+// 基于标题分组的通用分段函数
+function segmentByHeadings(url: string, html: string) {
+  const $ = cheerio.load(html);
+  const hostname = new URL(url).hostname;
+
+  function isSameHost(href: string) {
+    try {
+      const u = new URL(href, url);
+      return u.hostname === hostname;
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizeUrl(href: string) {
+    try {
+      return new URL(href, url).href;
+    } catch {
+      return '';
+    }
+  }
+
+  const headingSelectors = 'h1, h2, h3';
+  const groups: Array<{ heading: string; articles: Array<{ title: string; link: string; pubDate: string }> }> = [];
+
+  // 站点与栏目定向规则（减少把“业务网站/友链”当作文章的误判）
+  const isRecruitListPage = /hrss\.gd\.gov\.cn/.test(hostname) && /\/zwgk\/sydwzp\//.test(url);
+  const blacklistHeadingRegex = /(上级政府网站|各省市人社部门网站|各地市人社部门网站|业务网站|友情链接|网站地图|联系我们)/;
+  const recruitKeywordRegex = /(公告|公示|招聘|拟聘|集中公开招聘|高校毕业生)/;
+  const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
+
+  function isLikelyArticle(text: string, linkHref: string, contextHeading: string): boolean {
+    if (!text) return false;
+    if (blacklistHeadingRegex.test(contextHeading)) return false;
+    if (text.length < 5) return false;
+    // 同域已在外层保证，这里进一步做栏目与关键词约束
+    if (isRecruitListPage) {
+      if (!recruitKeywordRegex.test(text)) return false;
+    }
+    return true;
+  }
+  $(headingSelectors).each((_, h) => {
+    const name = $(h).text().trim();
+    if (!name || name.length < 2 || name.length > 30) return;
+    if (/^首页$|关于|登录|联系我们/.test(name)) return;
+    if (blacklistHeadingRegex.test(name)) return;
+
+    const currentLevel = parseInt((h.tagName || 'h3').replace(/[^0-9]/g, '')) || 3;
+    const articles: any[] = [];
+    let walker = $(h).next();
+    let steps = 0;
+    while (walker.length && steps < 25) {
+      const tag = walker.get(0)?.tagName?.toLowerCase() || '';
+      if (/^h[1-3]$/.test(tag)) {
+        const level = parseInt(tag.replace('h', '')) || 3;
+        if (level <= currentLevel) break;
+      }
+      walker.find('a[href]').each((__, a) => {
+        const text = $(a).text().trim();
+        const href = $(a).attr('href') || '';
+        if (!text || !href) return;
+        if (text.length < 4 || text.length > 100) return;
+        if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+        const full = normalizeUrl(href);
+        if (!full || !isSameHost(full)) return;
+        if (!isLikelyArticle(text, full, name)) return;
+        // 附加日期判定：若文本中无日期，尝试在邻近节点找
+        let hasDate = dateRegex.test(text);
+        if (!hasDate) {
+          const near = $(a).parent().text();
+          hasDate = dateRegex.test(near);
+        }
+        // 对于招聘栏目，优先保留有日期的项
+        if (isRecruitListPage && !hasDate) return;
+        articles.push({ title: text.replace(/\s+/g, ' '), link: full, pubDate: new Date().toISOString() });
+      });
+      walker = walker.next();
+      steps++;
+    }
+    const seen = new Set<string>();
+    const unique = articles.filter(a => {
+      if (seen.has(a.link)) return false;
+      seen.add(a.link);
+      return true;
+    }).slice(0, 30);
+    if (unique.length >= 2) groups.push({ heading: name, articles: unique });
+  });
+
+  return groups;
+}
+
+// 更新网页RSS订阅源（基于标题分组刷新）
 async function updateWebpageFeeds() {
   try {
     const feeds = await prisma.feed.findMany({});
@@ -71,51 +183,29 @@ async function updateWebpageFeeds() {
         
         if (response.ok) {
           const html = await response.text();
-          const $ = cheerio.load(html);
-          
+
           // 删除过期文章（超过30天）
           const thirtyDaysAgo = new Date();
           thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-          
           await prisma.item.deleteMany({
-            where: {
-              feedId: feed.id,
-              published: { lt: thirtyDaysAgo }
-            }
+            where: { feedId: feed.id, published: { lt: thirtyDaysAgo } }
           });
-          
-          // 检测新文章
-          const governmentCategories = [
-            '规范性文件', '政策解读', '通知公告', '要闻', '最新政策', '政策文件',
-            '法规制度', '管理办法', '实施细则', '工作动态', '新闻动态'
-          ];
-          
-          const selectors = ['a', '.news-item a', '.article-item a', '.policy-item a'];
-          const newArticles = [];
-          
-          for (const selector of selectors) {
-            $(selector).each((_, element) => {
-              const text = $(element).text().trim();
-              const href = $(element).attr('href');
-              
-              if (text && href && text.length > 5 && text.length < 100) {
-                const isRelevant = governmentCategories.some(keyword => 
-                  text.includes(keyword)
-                ) || text.includes('通知') || text.includes('公告') || text.includes('政策');
-                
-                if (isRelevant) {
-                  const fullUrl = href.startsWith('http') ? href : new URL(href, feed.url).href;
-                  newArticles.push({
-                    title: text,
-                    link: fullUrl,
-                    pubDate: new Date()
-                  });
-                }
-              }
-            });
+
+          // 若订阅名形如 host/标题，则按标题定位对应分组
+          const host = new URL(feed.url).hostname;
+          const match = feed.title?.startsWith(host + '/') ? feed.title.split('/').slice(1).join('/') : null;
+          let newArticles: Array<{ title: string; link: string; pubDate: string }> = [];
+          try {
+            const groups = segmentByHeadings(feed.url, html);
+            if (match) {
+              const g = groups.find(x => x.heading === match);
+              if (g) newArticles = g.articles;
+            }
+            if (!newArticles.length && groups.length) newArticles = groups[0].articles;
+          } catch {
+            newArticles = [];
           }
-          
-          // 添加新文章
+
           for (const article of newArticles.slice(0, 20)) {
             const existingItem = await prisma.item.findFirst({
               where: {
@@ -129,7 +219,7 @@ async function updateWebpageFeeds() {
                 data: {
                   title: article.title,
                   link: article.link,
-                  published: article.pubDate,
+                  published: new Date(article.pubDate),
                   feedId: feed.id
                 }
               });
@@ -576,6 +666,8 @@ export async function feedRoutes(app: FastifyInstance) {
           { name: '通知公告', hrefCandidates: ['通知公告', '/tzgg'] },
           { name: '事业单位公开招聘', hrefCandidates: ['事业单位公开招聘', '公开招聘'] }
         ];
+        const allowedPathWhitelist = ['/zwgk/sydwzp/'];
+        const blacklistText = /(信息网|考试网|招聘网|门户|上级政府网站|各省市人社部门网站|各地市人社部门网站|业务网站|友情链接)/;
 
         async function fetchListPage(listUrl: string) {
           try {
@@ -597,10 +689,15 @@ export async function feedRoutes(app: FastifyInstance) {
               const href = $$(a).attr('href');
               if (!href || !text || text.length < 5) return;
               // 过滤外部站点导航类链接
-              if (/gov\.cn|gd\.gov\.cn|mohrss\.gov\.cn|rsj\.|rst\./i.test(href)) return;
+              if (blacklistText.test(text)) return;
               const fullUrl = href.startsWith('http') ? href : new URL(href, listUrl).href;
               // 过滤导航/面包屑等非文章链接
               if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+              // 仅保留栏目内路径
+              try {
+                const p = new URL(fullUrl).pathname;
+                if (!allowedPathWhitelist.some(w => p.startsWith(w))) return;
+              } catch {}
               articles.push({ title: text, link: fullUrl, pubDate: new Date().toISOString() });
             });
             return articles.slice(0, 15);
@@ -633,6 +730,15 @@ export async function feedRoutes(app: FastifyInstance) {
           }
 
           if (candidateHref) {
+            // 入口也要求在白名单路径下
+            try {
+              const p = new URL(candidateHref).pathname;
+              if (!allowedPathWhitelist.some(w => p.startsWith(w))) {
+                candidateHref = null;
+              }
+            } catch {}
+          }
+          if (candidateHref) {
             const articles = await fetchListPage(candidateHref);
             if (articles.length > 0) {
               categories.push({ name: cfg.name, selector: 'a', articles });
@@ -645,96 +751,91 @@ export async function feedRoutes(app: FastifyInstance) {
         }
         // 若定制失败则继续走通用检测
       }
-      
-      // 政府网站常见分类关键词
-      const governmentCategories = [
-        '规范性文件', '政策解读', '通知公告', '要闻', '最新政策', '政策文件',
-        '法规制度', '管理办法', '实施细则', '工作动态', '新闻动态',
-        '重要通知', '公告公示', '政策法规', '办事指南', '信息公开'
-      ];
-      
-      // 智能检测分类
-      const categories = [];
-      const processedSelectors = new Set();
-      
-      // 检测导航菜单、侧边栏、内容区域中的分类
-      const selectors = [
-        'nav a', '.nav a', '.menu a', '.sidebar a', '.category a',
-        '.content h2', '.content h3', '.news-list h3', '.article-list h3',
-        '.policy-list h3', '.notice-list h3', '.file-list h3',
-        'ul li a', 'ol li a', '.list-item a', '.item-title'
-      ];
-      
-      for (const selector of selectors) {
-        $(selector).each((_, element) => {
-          const text = $(element).text().trim();
-          const href = $(element).attr('href');
-          
-          if (text && text.length > 2 && text.length < 50 && href) {
-            // 检查是否包含政府网站关键词
-            const isGovernmentCategory = governmentCategories.some(keyword => 
-              text.includes(keyword)
-            );
-            
-            if (isGovernmentCategory && !processedSelectors.has(text)) {
-              processedSelectors.add(text);
-              
-              // 尝试找到对应的文章列表
-              const articles = [];
-              const parent = $(element).closest('ul, ol, div, section');
-              
-              if (parent.length > 0) {
-                parent.find('a').each((_, linkEl) => {
-                  const linkText = $(linkEl).text().trim();
-                  const linkHref = $(linkEl).attr('href');
-                  
-                  if (linkText && linkHref && linkText !== text) {
-                    // 构建完整URL
-                    const fullUrl = linkHref.startsWith('http') ? linkHref : new URL(linkHref, url).href;
-                    
-                    articles.push({
-                      title: linkText,
-                      link: fullUrl,
-                      pubDate: new Date().toISOString()
-                    });
-                  }
-                });
-              }
-              
-              categories.push({
-                name: text,
-                selector: selector,
-                articles: articles.slice(0, 10) // 限制文章数量
-              });
-            }
-          }
-        });
+
+      // 通用方案：按 H1/H2/H3 标题分组，抽取其后相邻区域的文章链接
+      function isSameHost(href: string) {
+        try {
+          const u = new URL(href, url);
+          return u.hostname === hostname;
+        } catch {
+          return false;
+        }
       }
-      
-      // 如果没有检测到分类，尝试通用检测
-      if (categories.length === 0) {
-        $('a').each((_, element) => {
-          const text = $(element).text().trim();
-          const href = $(element).attr('href');
-          
-          if (text && text.length > 3 && text.length < 30 && href && 
-              !text.includes('首页') && !text.includes('关于') && 
-              !text.includes('联系') && !text.includes('登录')) {
-            
-            if (!processedSelectors.has(text)) {
-              processedSelectors.add(text);
-              
-              categories.push({
-                name: text,
-                selector: 'a',
-                articles: []
-              });
-            }
-          }
-        });
+
+      function normalizeUrl(href: string) {
+        try {
+          return new URL(href, url).href;
+        } catch {
+          return '';
+        }
       }
-      
-      return { categories: categories.slice(0, 8) }; // 限制分类数量
+
+      const headingSelectors = 'h1, h2, h3';
+      const categoriesByHeading: any[] = [];
+      $(headingSelectors).each((_, h) => {
+        const name = $(h).text().trim();
+        if (!name || name.length < 2 || name.length > 30) return;
+        if (/^首页$|关于|登录|联系我们/.test(name)) return;
+
+        // 向后查找直到遇到下一个同级或更高等级标题
+        const currentLevel = parseInt((h.tagName || 'h3').replace(/[^0-9]/g, '')) || 3;
+        const articles: any[] = [];
+        let walker = $(h).next();
+        let steps = 0;
+        while (walker.length && steps < 20) {
+          const tag = walker.get(0)?.tagName?.toLowerCase() || '';
+          if (/^h[1-3]$/.test(tag)) {
+            const level = parseInt(tag.replace('h', '')) || 3;
+            if (level <= currentLevel) break;
+          }
+          // 抽取列表或段落中的 a 链接
+          walker.find('a[href]').each((__, a) => {
+            const text = $(a).text().trim();
+            const href = $(a).attr('href') || '';
+            if (!text || !href) return;
+            if (text.length < 4 || text.length > 100) return;
+            if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+            const full = normalizeUrl(href);
+            if (!full || !isSameHost(full)) return; // 仅同域
+            articles.push({ title: text, link: full, pubDate: new Date().toISOString() });
+          });
+          // 如果当前节点本身就是列表，也抓取
+          if (/(ul|ol|div|section)/.test(tag)) {
+            walker.find('li a[href], .list a[href], .news a[href], .item a[href]').each((__, a) => {
+              const text = $(a).text().trim();
+              const href = $(a).attr('href') || '';
+              if (!text || !href) return;
+              const full = normalizeUrl(href);
+              if (!full || !isSameHost(full)) return;
+              if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+              if (text.length < 4 || text.length > 100) return;
+              if (!isLikelyArticle(text, full, name)) return;
+              let hasDate = dateRegex.test(text) || dateRegex.test($(a).parent().text());
+              if (isRecruitListPage && !hasDate) return;
+              articles.push({ title: text.replace(/\s+/g, ' '), link: full, pubDate: new Date().toISOString() });
+            });
+          }
+          walker = walker.next();
+          steps++;
+        }
+        // 去重并限量
+        const seen = new Set<string>();
+        const uniqueArticles = articles.filter(a => {
+          if (seen.has(a.link)) return false;
+          seen.add(a.link);
+          return true;
+        }).slice(0, 20);
+
+        if (uniqueArticles.length >= 2) {
+          categoriesByHeading.push({ name, selector: 'heading', articles: uniqueArticles });
+        }
+      });
+
+      if (categoriesByHeading.length > 0) {
+        return { categories: categoriesByHeading.slice(0, 12) };
+      }
+
+      return { categories: [] };
       
     } catch (error) {
       console.error('网页分类检测失败:', error);
@@ -754,7 +855,7 @@ export async function feedRoutes(app: FastifyInstance) {
     const { url } = parsed.data;
     
     try {
-      // 增强稳定性：重试 2 次，不同等待策略
+      // 增强稳定性：重试 2 次，不同等待策略，整体超时更短
       const maxAttempts = 2;
       let lastError: any = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -774,22 +875,30 @@ export async function feedRoutes(app: FastifyInstance) {
           await page.setViewport({ width: 1920, height: 1080 });
           await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-          await page.goto(url, {
+          const gotoPromise = page.goto(url, {
             // 第一次快速：domcontentloaded；若失败再用 networkidle2
             waitUntil: attempt === 1 ? 'domcontentloaded' : 'networkidle2',
-            timeout: 45000
+            timeout: 15000
           });
+          // 限制整体导航时间，避免长时间卡住
+          await Promise.race([
+            gotoPromise,
+            new Promise((_, rej) => setTimeout(() => rej(new Error('Navigation overall timeout')), 16000))
+          ]);
 
-          // 滚动以触发懒加载
-          await page.evaluate(async () => {
-            const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
-            for (let y = 0; y < 2000; y += 400) {
-              window.scrollTo(0, y);
-              await delay(200);
-            }
-            window.scrollTo(0, 0);
-          });
-          await new Promise(r => setTimeout(r, attempt === 1 ? 1500 : 2500));
+          // 为避免 evaluate 中的打包辅助符号报错，改为简单等待+一次性滚动
+          try {
+            await page.waitForTimeout(attempt === 1 ? 400 : 900);
+            await page.evaluate(() => {
+              const max = 2000;
+              const step = 600;
+              for (let y = 0; y <= max; y += step) {
+                window.scrollTo(0, y);
+              }
+              window.scrollTo(0, 0);
+            });
+            await page.waitForTimeout(400);
+          } catch {}
 
           const screenshot = await page.screenshot({
             fullPage: true,
@@ -858,7 +967,6 @@ export async function feedRoutes(app: FastifyInstance) {
             data: {
               title: `${new URL(url).hostname}/${category.name}`,
               url: url,
-              type: 'webpage',
               userId: userId,
               groupId: null
             }
@@ -903,6 +1011,112 @@ export async function feedRoutes(app: FastifyInstance) {
         error: 'Failed to create RSS feeds',
         message: '批量创建RSS失败'
       });
+    }
+  });
+
+  // 新增：网页词条分段（供前端“拖入”使用）
+  app.post('/webpage-segmentation', async (req, reply) => {
+    const schema = z.object({ url: z.string().url() });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
+
+    const { url } = parsed.data;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        timeout: 25000
+      });
+      if (!response.ok) return reply.code(400).send({ error: 'Failed to fetch webpage' });
+      const html = await response.text();
+      const groups = segmentByHeadings(url, html);
+      // 将第一个链接文本作为该组“预览文案”
+      const payload = groups.map(g => ({
+        titleToken: g.heading,
+        contentTokensPreview: g.articles[0]?.title || '',
+        articles: g.articles
+      })).slice(0, 15);
+      return { groups: payload };
+    } catch (e) {
+      return reply.code(500).send({ error: 'Segmentation failed' });
+    }
+  });
+
+  // 新增：根据用户选择生成RSS订阅源
+  app.post('/webpage-build-rss', async (req, reply) => {
+    const schema = z.object({
+      url: z.string().url(),
+      titleToken: z.string(),
+      articles: z.array(z.object({ title: z.string(), link: z.string(), pubDate: z.string().optional() }))
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid payload' });
+
+    const userId = (req as any).user?.sub as string;
+    const { url, titleToken, articles } = parsed.data;
+    try {
+      const host = new URL(url).hostname;
+      const safeTitle = `${host}/${titleToken}`.replace(/[\n\r\t]+/g, ' ').slice(0, 180);
+
+      // 校验用户是否存在（防止旧 token 指向已不存在的用户导致外键错误）
+      const userExists = await prisma.user.findUnique({ where: { id: userId } });
+      if (!userExists) {
+        return reply.code(401).send({ error: 'Invalid user', message: '用户不存在或登录已过期，请重新登录' });
+      }
+
+      // 过滤无效/跨域/重复链接
+      const seen = new Set<string>();
+      const filtered = articles
+        .map(a => {
+          try {
+            const u = new URL(a.link);
+            return { ...a, link: u.href };
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+        .filter((a: any) => {
+          try {
+            return new URL(a.link).hostname === host;
+          } catch { return false; }
+        })
+        .filter((a: any) => {
+          if (seen.has(a.link)) return false;
+          seen.add(a.link);
+          return true;
+        })
+        .slice(0, 50) as Array<{ title: string; link: string; pubDate?: string }>;
+
+      if (filtered.length === 0) {
+        return reply.code(400).send({ error: 'No valid articles', message: '未找到有效的文章链接（需要与站点同域且为有效URL）' });
+      }
+
+      const feed = await prisma.feed.create({
+        data: { title: safeTitle, url, userId, groupId: null }
+      });
+
+      let created = 0;
+      for (const a of filtered) {
+        try {
+          await prisma.item.create({
+            data: {
+              title: a.title?.slice(0, 300) || '无标题',
+              link: a.link,
+              published: a.pubDate ? new Date(a.pubDate) : new Date(),
+              feedId: feed.id
+            }
+          });
+          created++;
+        } catch (err) {
+          // 跳过个别失败，不中断
+        }
+      }
+      return { id: feed.id, title: feed.title, articlesCount: created };
+    } catch (e: any) {
+      const msg = e?.message || 'unknown error';
+      return reply.code(500).send({ error: 'Failed to build rss', message: msg });
     }
   });
 }
