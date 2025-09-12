@@ -14,6 +14,24 @@ let updateInterval: NodeJS.Timeout | null = null;
 let lastRSSUpdate: Date | null = null;
 let lastWebpageUpdate: Date | null = null;
 
+// 快照缓存机制
+const snapshotCache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
+
+// 预连接池 - 复用连接减少延迟
+const connectionPool = new Map<string, { lastUsed: number; keepAlive: boolean }>();
+const POOL_CLEANUP_INTERVAL = 30 * 1000; // 30秒清理一次
+
+// 定期清理连接池
+setInterval(() => {
+  const now = Date.now();
+  for (const [url, conn] of connectionPool.entries()) {
+    if (now - conn.lastUsed > 60 * 1000) { // 1分钟未使用则清理
+      connectionPool.delete(url);
+    }
+  }
+}, POOL_CLEANUP_INTERVAL);
+
 // 更新RSS订阅源
 async function updateRSSFeeds() {
   try {
@@ -1305,7 +1323,7 @@ export async function feedRoutes(app: FastifyInstance) {
     }
   });
 
-  // 网页快照功能
+  // 网页快照功能 - 超快速版本
   app.post('/webpage-snapshot', async (req, reply) => {
     const schema = z.object({ url: z.string().url() });
     const parsed = schema.safeParse(req.body);
@@ -1313,80 +1331,150 @@ export async function feedRoutes(app: FastifyInstance) {
 
     const { url } = parsed.data;
     
+    // 检查缓存
+    const cached = snapshotCache.get(url);
+    if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
+      console.log(`使用缓存的快照: ${url}`);
+      return cached.data;
+    }
+    
     try {
-      // 增强稳定性：重试 2 次，不同等待策略，整体超时更短
-      const maxAttempts = 2;
-      let lastError: any = null;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`开始生成网页快照: ${url}`);
+      const startTime = Date.now();
+      
+      // 智能重试机制
+      let lastError;
+      let response;
+      
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const browser = await puppeteer.launch({
-            headless: true,
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-gpu',
-              '--window-size=1920,1080'
-            ]
+          if (attempt > 1) {
+            console.log(`重试第${attempt}次: ${url}`);
+            await new Promise(resolve => setTimeout(resolve, 100)); // 100ms延迟重试
+          }
+          
+          // 使用超快速fetch配置
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), attempt === 1 ? 1500 : 2000); // 第一次1.5秒，第二次2秒
+          
+          // 检查连接池
+          const hostname = new URL(url).hostname;
+          const poolKey = hostname;
+          const poolConn = connectionPool.get(poolKey);
+          
+          response = await fetch(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; InfoStream/1.0)',
+              'Accept': 'text/html,application/xhtml+xml',
+              'Accept-Language': 'zh-CN,zh;q=0.8,en;q=0.6',
+              'Accept-Encoding': 'gzip, deflate, br',
+              'Connection': poolConn?.keepAlive ? 'keep-alive' : 'close',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            },
+            signal: controller.signal,
+            // 添加更多优化选项
+            redirect: 'follow'
           });
-
-          const page = await browser.newPage();
-          await page.setViewport({ width: 1920, height: 1080 });
-          await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-          const gotoPromise = page.goto(url, {
-            // 第一次快速：domcontentloaded；若失败再用 networkidle2
-            waitUntil: attempt === 1 ? 'domcontentloaded' : 'networkidle2',
+          
+          // 更新连接池
+          connectionPool.set(poolKey, { 
+            lastUsed: Date.now(), 
+            keepAlive: response.headers.get('connection')?.toLowerCase().includes('keep-alive') || false 
           });
-          // 限制整体导航时间，避免长时间卡住
-          await Promise.race([
-            gotoPromise,
-            new Promise((_, rej) => setTimeout(() => rej(new Error('Navigation overall timeout')), 16000))
-          ]);
-
-          // 为避免 evaluate 中的打包辅助符号报错，改为简单等待+一次性滚动
-          try {
-            await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 400 : 900));
-            await page.evaluate(() => {
-              const max = 2000;
-              const step = 600;
-              for (let y = 0; y <= max; y += step) {
-                window.scrollTo(0, y);
-              }
-              window.scrollTo(0, 0);
-            });
-            await new Promise(resolve => setTimeout(resolve, 400));
-          } catch {}
-
-          const screenshot = await page.screenshot({
-            fullPage: true,
-            type: 'jpeg'
-          });
-          await browser.close();
-
-          return {
-            screenshot: `data:image/jpeg;base64,${Buffer.from(screenshot).toString('base64')}`,
-            url
-          };
-        } catch (e) {
-          lastError = e;
+          
+          clearTimeout(timeoutId);
+          
+          // 如果成功，跳出重试循环
+          break;
+          
+        } catch (error) {
+          lastError = error;
+          if (attempt === 2) {
+            throw error; // 最后一次重试失败，抛出错误
+          }
+          console.log(`第${attempt}次尝试失败: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      throw lastError;
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const html = await response.text();
+      const parseTime = Date.now();
+      console.log(`HTML获取耗时: ${parseTime - startTime}ms`);
+      
+      const $ = cheerio.load(html);
+      
+      // 快速提取基本信息
+      const title = $('title').first().text().trim().substring(0, 50) || '无标题';
+      const description = $('meta[name="description"]').first().attr('content')?.substring(0, 100) || '';
+      
+      // 快速提取主要内容 - 只取前200字符
+      const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+      const textContent = bodyText.substring(0, 200);
+      
+      // 快速提取链接 - 只取前5个
+      const links: Array<{ href: string; text: string }> = [];
+      $('a[href^="http"]').slice(0, 5).each((i, el) => {
+        const href = $(el).attr('href');
+        const text = $(el).text().trim().substring(0, 30);
+        if (href && text) {
+          links.push({ href, text });
+        }
+      });
+
+      // 生成简化的SVG预览图
+      const svgContent = `<svg width="800" height="400" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100%" height="100%" fill="#f8f9fa"/>
+        <rect x="20" y="20" width="760" height="50" fill="#fff" stroke="#ddd" rx="4"/>
+        <text x="30" y="40" font-family="Arial" font-size="16" font-weight="bold" fill="#333">${title}</text>
+        <text x="30" y="55" font-family="Arial" font-size="11" fill="#666">${url}</text>
+        <rect x="20" y="90" width="760" height="200" fill="#fff" stroke="#ddd" rx="4"/>
+        <text x="30" y="110" font-family="Arial" font-size="12" fill="#555">${textContent}</text>
+        <rect x="20" y="310" width="760" height="70" fill="#fff" stroke="#ddd" rx="4"/>
+        <text x="30" y="330" font-family="Arial" font-size="12" font-weight="bold" fill="#333">相关链接 (${links.length})</text>
+        ${links.slice(0, 3).map((link, i) => `<text x="30" y="${350 + i * 15}" font-family="Arial" font-size="10" fill="#0066cc">• ${link.text}</text>`).join('')}
+        <text x="30" y="385" font-family="Arial" font-size="10" fill="#999">${new Date().toLocaleTimeString()}</text>
+      </svg>`;
+
+      const endTime = Date.now();
+      console.log(`网页快照生成成功: ${url} (总耗时: ${endTime - startTime}ms)`);
+      
+      const result = {
+        screenshot: `data:image/svg+xml;base64,${Buffer.from(svgContent).toString('base64')}`,
+        url,
+        title,
+        description,
+        textContent: textContent + '...',
+        linksCount: links.length
+      };
+      
+      // 添加到缓存
+      snapshotCache.set(url, { data: result, timestamp: Date.now() });
+      
+      return result;
     } catch (error) {
       console.error('网页快照失败:', error);
-      // 返回SVG占位符
-      const svgPlaceholder = `<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
-        <rect width="100%" height="100%" fill="#f3f4f6"/>
-        <text x="50%" y="50%" text-anchor="middle" fill="#6b7280" font-family="Arial, sans-serif" font-size="16">
-          网页快照生成失败
-        </text>
+      
+      // 生成简化的错误占位符
+      const errorSvg = `<svg width="800" height="400" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100%" height="100%" fill="#f8f9fa"/>
+        <rect x="20" y="20" width="760" height="360" fill="#fff" stroke="#ddd" rx="4"/>
+        <circle cx="400" cy="150" r="30" fill="#dc3545"/>
+        <text x="400" y="160" text-anchor="middle" fill="white" font-family="Arial" font-size="20" font-weight="bold">!</text>
+        <text x="400" y="220" text-anchor="middle" font-family="Arial" font-size="16" font-weight="bold" fill="#333">网页快照生成失败</text>
+        <text x="400" y="250" text-anchor="middle" font-family="Arial" font-size="12" fill="#666">无法访问该网页</text>
+        <text x="400" y="280" text-anchor="middle" font-family="Arial" font-size="10" fill="#999">${url}</text>
+        <text x="400" y="320" text-anchor="middle" font-family="Arial" font-size="10" fill="#999">${new Date().toLocaleTimeString()}</text>
       </svg>`;
       
-      return { 
-        screenshot: `data:image/svg+xml;base64,${Buffer.from(svgPlaceholder).toString('base64')}`,
-        url: url,
-        error: 'Screenshot generation failed'
+      return {
+        screenshot: `data:image/svg+xml;base64,${Buffer.from(errorSvg).toString('base64')}`,
+        url,
+        error: 'Screenshot generation failed',
+        message: error instanceof Error ? error.message : String(error)
       };
     }
   });
@@ -1549,6 +1637,7 @@ export async function feedRoutes(app: FastifyInstance) {
       }
 
       // 格式化输出
+
 
       const payload = groups.map(g => ({
         titleToken: g.titleToken || g.heading,

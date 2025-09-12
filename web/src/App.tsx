@@ -62,6 +62,9 @@ export default function App() {
   const [hasTitleBeenEdited, setHasTitleBeenEdited] = useState(false)
   // 网页快照加载状态
   const [isSnapshotLoading, setIsSnapshotLoading] = useState(false)
+  const [snapshotError, setSnapshotError] = useState(false)
+  // 动态高度管理
+  const [containerHeight, setContainerHeight] = useState<number | null>(null)
   // 更新信息
   const [updateInfo, setUpdateInfo] = useState<{
     rssUpdateFrequency: number;
@@ -99,6 +102,25 @@ export default function App() {
     
     return () => clearInterval(interval)
   }, [token])
+
+  // 动态计算容器高度
+  useEffect(() => {
+    if (!showCategorySelection || segGroups.length === 0) return
+    
+    const calculateHeight = () => {
+      // 获取右侧内容区域的实际高度
+      const rightPanel = document.querySelector('.right-panel-content')
+      if (rightPanel) {
+        const height = rightPanel.scrollHeight
+        setContainerHeight(height)
+      }
+    }
+    
+    // 延迟计算，确保DOM已渲染
+    const timer = setTimeout(calculateHeight, 100)
+    
+    return () => clearTimeout(timer)
+  }, [showCategorySelection, segGroups, segGroupsLocal, segExpandedSet])
 
   const loadFeedsWithToken = async (authToken: string) => {
     try {
@@ -556,18 +578,48 @@ export default function App() {
 
       // 3) 再异步拉快照，不阻塞分组显示
       setIsSnapshotLoading(true)
-      fetch('/api/feeds/webpage-snapshot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ url: webpageUrl })
-      }).then(async r => {
-        if (r.ok) {
-          const d = await r.json()
-          setScrapedData(d)
+      setSnapshotError(false)
+      
+      const fetchSnapshot = async (retryCount = 0) => {
+        try {
+          const response = await fetch('/api/feeds/webpage-snapshot', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ url: webpageUrl })
+          })
+          
+          if (response.ok) {
+            const data = await response.json()
+            if (data.screenshot && !data.error) {
+              setScrapedData(data)
+              setSnapshotError(false)
+            } else {
+              throw new Error('快照生成失败')
+            }
+          } else {
+            throw new Error(`HTTP ${response.status}`)
+          }
+        } catch (error) {
+          console.error('快照生成失败:', error)
+          
+          // 如果还有重试次数，等待2秒后重试
+          if (retryCount < 2) {
+            console.log(`快照生成失败，${2}秒后重试 (${retryCount + 1}/2)`)
+            setTimeout(() => {
+              fetchSnapshot(retryCount + 1)
+            }, 2000)
+          } else {
+            // 所有重试都失败了
+            setSnapshotError(true)
+          }
+        } finally {
+          if (retryCount >= 2) {
+            setIsSnapshotLoading(false)
+          }
         }
-      }).catch(() => {}).finally(() => {
-        setIsSnapshotLoading(false)
-      })
+      }
+      
+      fetchSnapshot()
     } catch (error) {
       console.error('Category detection error:', error)
       setErrorMessage('网络错误，请检查网络连接')
@@ -1571,6 +1623,62 @@ export default function App() {
                           <div className="text-center">
                             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-3"></div>
                             <p className="text-sm text-gray-600">网页快照正在加载...</p>
+                            <p className="text-xs text-gray-500 mt-1">这可能需要几秒钟时间</p>
+                          </div>
+                        </div>
+                      ) : snapshotError ? (
+                        <div className="flex items-center justify-center h-full bg-gray-50">
+                          <div className="text-center">
+                            <div className="text-red-500 mb-3">
+                              <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                              </svg>
+                            </div>
+                            <p className="text-sm text-gray-600 mb-2">网页快照生成失败</p>
+                            <p className="text-xs text-gray-500 mb-3">可能是网络问题或网站访问限制</p>
+                            <button 
+                              className="px-3 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors"
+                              onClick={() => {
+                                setIsSnapshotLoading(true)
+                                setSnapshotError(false)
+                                // 重新触发快照生成
+                                const fetchSnapshot = async (retryCount = 0) => {
+                                  try {
+                                    const response = await fetch('/api/feeds/webpage-snapshot', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                                      body: JSON.stringify({ url: webpageUrl })
+                                    })
+                                    
+                                    if (response.ok) {
+                                      const data = await response.json()
+                                      if (data.screenshot && !data.error) {
+                                        setScrapedData(data)
+                                        setSnapshotError(false)
+                                      } else {
+                                        throw new Error('快照生成失败')
+                                      }
+                                    } else {
+                                      throw new Error(`HTTP ${response.status}`)
+                                    }
+                                  } catch (error) {
+                                    console.error('快照生成失败:', error)
+                                    if (retryCount < 1) {
+                                      setTimeout(() => fetchSnapshot(retryCount + 1), 2000)
+                                    } else {
+                                      setSnapshotError(true)
+                                    }
+                                  } finally {
+                                    if (retryCount >= 1) {
+                                      setIsSnapshotLoading(false)
+                                    }
+                                  }
+                                }
+                                fetchSnapshot()
+                              }}
+                            >
+                              重试
+                            </button>
                           </div>
                         </div>
                       ) : scrapedData ? (
@@ -1632,7 +1740,13 @@ export default function App() {
                 {showCategorySelection && segGroups.length > 0 && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium text-gray-700">拖拽选择：左侧上框拖入1个标题词条，下框拖入多篇文章词条</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 min-h-[600px]">
+                    <div 
+                      className="grid grid-cols-1 md:grid-cols-3 gap-4"
+                      style={{ 
+                        height: containerHeight ? `${containerHeight}px` : 'auto',
+                        minHeight: '400px'
+                      }}
+                    >
                       {/* 左：上下两个拖入框 */}
                       <div className="md:col-span-1 flex flex-col h-full">
                         <div
@@ -1649,7 +1763,7 @@ export default function App() {
                               setHasTitleBeenEdited(true)
                             }
                           }}
-                          className="border-2 border-purple-400 rounded-lg p-3 bg-purple-50/40 mb-3"
+                          className="border-2 border-purple-400 rounded-lg p-3 bg-purple-50/40 mb-3 flex-shrink-0"
                         >
                           <div className="text-xs text-gray-700 font-medium mb-2">标题词条（拖入或编辑）</div>
                           <input
@@ -1704,7 +1818,7 @@ export default function App() {
                               } catch {}
                             }
                           }}
-                          className="border-2 border-purple-400 rounded-lg p-3 flex-1 bg-purple-50/30 flex flex-col"
+                          className="border-2 border-purple-400 rounded-lg p-3 flex-1 bg-purple-50/30 flex flex-col min-h-0"
                         >
                           <div className="flex items-center justify-between mb-2">
                             <div className="text-xs text-gray-700 font-medium">
@@ -1737,10 +1851,10 @@ export default function App() {
                       </div>
                       {/* 右：统一候选池（标题 + 文章组） */}
                       <div className="md:col-span-2 border border-gray-200 rounded-lg p-3 flex flex-col h-full">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-0">
-                          <div className="flex flex-col">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 h-full right-panel-content">
+                          <div className="flex flex-col h-full">
                             <div className="text-xs text-gray-700 font-medium mb-2">标题词条（可拖动到左上框）</div>
-                            <div className="space-y-2 flex-1 overflow-auto">
+                            <div className="space-y-2 flex-1 overflow-auto min-h-0">
                               {segGroupsLocal.map((g, idx) => (
                                 <div
                                   key={idx}
@@ -1757,7 +1871,7 @@ export default function App() {
                               ))}
                             </div>
                           </div>
-                          <div className="flex flex-col">
+                          <div className="flex flex-col h-full">
                             <div className="flex items-center justify-between mb-2">
                               <div className="text-xs text-gray-700 font-medium">文章词条（可拖拽整组到左下框）</div>
                               <div className="flex items-center space-x-2">
@@ -1773,7 +1887,7 @@ export default function App() {
                                 <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
                               </div>
                             </div>
-                            <div className="space-y-3 flex-1 overflow-auto">
+                            <div className="space-y-3 flex-1 overflow-auto min-h-0">
                               {segGroupsLocal.map((g, gi) => {
                                 const expanded = segExpandedSet.has(gi)
                                 const articles = g.articles || []
