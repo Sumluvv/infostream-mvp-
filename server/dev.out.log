@@ -2,7 +2,7 @@
 > @infostream/server@1.0.0 dev
 > tsx watch src/index.ts
 
-[dotenv@17.2.2] injecting env (0) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.2.2] injecting env (0) from .env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
 实时更新任务已启动: RSS每10秒, 网页RSS每20分钟
 FastifyError [Error]: Method 'POST' already declared for route '/api/feeds/webpage-snapshot'
     at Object.addNewRoute (/Users/liao/infostream-mvp/server/node_modules/fastify/lib/route.js:359:19)

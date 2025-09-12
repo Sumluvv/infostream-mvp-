@@ -936,8 +936,8 @@ export async function feedRoutes(app: FastifyInstance) {
       const page = await browser.newPage();
       
       // 设置更短的超时时间
-      page.setDefaultTimeout(5000);
-      page.setDefaultNavigationTimeout(5000);
+      page.setDefaultTimeout(8000);
+      page.setDefaultNavigationTimeout(8000);
       
       await page.setViewport({ width: 1200, height: 800 });
       await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -945,7 +945,7 @@ export async function feedRoutes(app: FastifyInstance) {
       // 快速导航，只等待DOM加载完成
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: 5000 // 进一步减少超时时间
+        timeout: 8000 // 8秒超时
       });
 
       // 简单等待，不进行复杂滚动
@@ -1210,10 +1210,42 @@ export async function feedRoutes(app: FastifyInstance) {
   });
 }
 
+// 类站点策略注册点
+const SITE_STRATEGIES = {
+  gov: {
+    keywords: ['规范性文件', '通知公告', '政策解读', '信息公开', '工作动态', '新闻中心', '公告公示'],
+    blacklist: ['上级政府网站', '各省市人社部门网站', '各地市人社部门网站', '业务网站', '友情链接', '网站地图', '联系我们'],
+    dateRequired: true,
+    pathPatterns: ['/zwgk/', '/gsgg/', '/zcfg/', '/zcjd/']
+  },
+  edu: {
+    keywords: ['公告', '招生', '讲座', '通知', '新闻', '动态'],
+    blacklist: ['联系我们', '网站地图', '友情链接', '版权声明'],
+    dateRequired: false,
+    pathPatterns: ['/news/', '/notice/', '/announcement/']
+  },
+  news: {
+    keywords: ['新闻', '资讯', '报道', '头条'],
+    blacklist: ['联系我们', '广告', '推广'],
+    dateRequired: true,
+    pathPatterns: ['/news/', '/article/', '/story/']
+  }
+};
+
+// 检测站点类型
+function detectSiteType(hostname: string, url: string): keyof typeof SITE_STRATEGIES | null {
+  if (/\.gov\.cn$/.test(hostname) || /\.gov\./.test(hostname)) return 'gov';
+  if (/\.edu\.cn$/.test(hostname) || /\.edu\./.test(hostname)) return 'edu';
+  if (/news\.|sina\.|sohu\.|163\.|qq\./.test(hostname)) return 'news';
+  return null;
+}
+
 // 基于标题分组的通用分段函数
 function segmentByHeadings(url: string, html: string) {
   const $ = cheerio.load(html);
   const hostname = new URL(url).hostname;
+  const siteType = detectSiteType(hostname, url);
+  const strategy = siteType ? SITE_STRATEGIES[siteType] : null;
 
   function isSameHost(href: string) {
     try {
@@ -1237,7 +1269,7 @@ function segmentByHeadings(url: string, html: string) {
 
   // 站点与栏目定向规则
   const isRecruitListPage = /hrss\.gd\.gov\.cn/.test(hostname) && /\/zwgk\/sydwzp\//.test(url);
-  const blacklistHeadingRegex = /(上级政府网站|各省市人社部门网站|各地市人社部门网站|业务网站|友情链接|网站地图|联系我们)/;
+  const blacklistHeadingRegex = strategy ? new RegExp(`(${strategy.blacklist.join('|')})`) : /(上级政府网站|各省市人社部门网站|各地市人社部门网站|业务网站|友情链接|网站地图|联系我们)/;
   const recruitKeywordRegex = /(公告|公示|招聘|拟聘|集中公开招聘|高校毕业生)/;
   const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
 
@@ -1259,6 +1291,15 @@ function segmentByHeadings(url: string, html: string) {
     
     // 过滤纯数字或纯符号
     if (/^[\d\s\-\.]+$/.test(text)) return false;
+    
+    // 类站点策略：检查关键词匹配
+    if (strategy) {
+      const hasKeyword = strategy.keywords.some(keyword => text.includes(keyword));
+      if (!hasKeyword && strategy.dateRequired) {
+        const hasDate = dateRegex.test(text) || dateRegex.test(contextHeading);
+        if (!hasDate) return false;
+      }
+    }
     
     // 对于招聘页面，放宽关键词要求
     if (isRecruitListPage) {

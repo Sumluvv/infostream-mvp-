@@ -42,6 +42,11 @@ export default function App() {
   const [isTitleEditing, setIsTitleEditing] = useState(false)
   const [isCreatingRSS, setIsCreatingRSS] = useState(false)
   const [creationProgress, setCreationProgress] = useState(0)
+  
+  // 策略选择相关状态
+  const [segmentationMode, setSegmentationMode] = useState<'auto' | 'headings' | 'cluster' | 'pattern'>('auto')
+  const [showEmptyResult, setShowEmptyResult] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
   // const [updatingFeeds, setUpdatingFeeds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -446,11 +451,26 @@ export default function App() {
   //   }
   // }
 
-  const detectCategories = async () => {
+  const detectCategories = async (mode?: 'auto' | 'headings' | 'cluster' | 'pattern') => {
     if (!webpageUrl.trim()) return
     
+    const selectedMode = mode || segmentationMode
     setIsScraping(true)
+    setIsRetrying(false)
+    
+    // 清空之前的状态
+    setSegGroups([])
+    setSegGroupsLocal([])
+    setScrapedData(null)
+    setSuggestedTitle('')
+    setShowCategorySelection(false)
+    setShowEmptyResult(false)
+    
     try {
+      // 创建AbortController用于超时控制
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 6000) // 6秒超时
+      
       // 同时获取网页快照和分段信息
       const [snapshotResponse, segmentationResponse] = await Promise.all([
         fetch('/api/feeds/webpage-snapshot', {
@@ -459,36 +479,56 @@ export default function App() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ url: webpageUrl })
-        }),
+          body: JSON.stringify({ url: webpageUrl }),
+          signal: controller.signal
+        }).catch(() => ({ ok: false })), // 快照失败不影响分段
         fetch('/api/feeds/webpage-segmentation', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ url: webpageUrl, mode: 'auto' })
+          body: JSON.stringify({ url: webpageUrl, mode: selectedMode }),
+          signal: controller.signal
         })
       ])
       
-      if (snapshotResponse.ok && segmentationResponse.ok) {
+      clearTimeout(timeoutId)
+      
+      // 处理快照结果
+      if (snapshotResponse.ok) {
         const snapshotData = await snapshotResponse.json()
-        const segmentationData = await segmentationResponse.json()
-        
         setScrapedData(snapshotData)
-        setDetectedCategories(segmentationData.groups || [])
-        setSegGroups(segmentationData.groups || [])
-        setSegGroupsLocal(segmentationData.groups || [])
-        setSuggestedTitle(segmentationData.suggestedTitle || '')
-        setShowCategorySelection(true)
+      }
+      
+      // 处理分段结果
+      if (segmentationResponse.ok) {
+        const segmentationData = await segmentationResponse.json()
+        const groups = segmentationData.groups || []
+        
+        if (groups.length > 0) {
+          setDetectedCategories(groups)
+          setSegGroups(groups)
+          setSegGroupsLocal(groups)
+          setSuggestedTitle(segmentationData.suggestedTitle || '')
+          setShowCategorySelection(true)
+          setShowEmptyResult(false)
+        } else {
+          setShowEmptyResult(true)
+          setShowCategorySelection(false)
+        }
       } else {
-        const errorData = await snapshotResponse.json().catch(() => ({}))
+        const errorData = await segmentationResponse.json().catch(() => ({}))
         setErrorMessage(errorData.message || '网页分析失败')
         setShowError(true)
       }
     } catch (error) {
       console.error('Category detection error:', error)
-      setErrorMessage('网络错误，请检查网络连接')
+      if (error.name === 'AbortError') {
+        setErrorMessage('请求超时，请检查网络连接或稍后重试')
+      } else {
+        setErrorMessage('网络错误，请检查网络连接')
+      }
       setShowError(true)
     } finally {
       setIsScraping(false)
@@ -1613,9 +1653,20 @@ export default function App() {
                       className="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                       required
                     />
+                    <select
+                      value={segmentationMode}
+                      onChange={(e) => setSegmentationMode(e.target.value as any)}
+                      className="px-3 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent appearance-none bg-white"
+                      disabled={isScraping}
+                    >
+                      <option value="auto">自动</option>
+                      <option value="headings">标题归属</option>
+                      <option value="cluster">链接聚类</option>
+                      <option value="pattern">路径聚合</option>
+                    </select>
                     <button
                       type="button"
-                      onClick={detectCategories}
+                      onClick={() => detectCategories()}
                       disabled={!webpageUrl.trim() || isScraping}
                       className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                     >
@@ -1643,6 +1694,57 @@ export default function App() {
                           网页快照正在加载...
                         </div>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* 空结果提示 */}
+                {showEmptyResult && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex items-start">
+                      <div className="flex-shrink-0">
+                        <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                      <div className="ml-3 flex-1">
+                        <h3 className="text-sm font-medium text-yellow-800">
+                          未检测到有效内容
+                        </h3>
+                        <div className="mt-2 text-sm text-yellow-700">
+                          <p>当前策略未能识别到文章内容，请尝试其他策略：</p>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => detectCategories('headings')}
+                            disabled={isScraping}
+                            className="px-3 py-1 text-xs bg-yellow-100 text-yellow-800 rounded hover:bg-yellow-200 disabled:opacity-50"
+                          >
+                            标题归属
+                          </button>
+                          <button
+                            onClick={() => detectCategories('cluster')}
+                            disabled={isScraping}
+                            className="px-3 py-1 text-xs bg-yellow-100 text-yellow-800 rounded hover:bg-yellow-200 disabled:opacity-50"
+                          >
+                            链接聚类
+                          </button>
+                          <button
+                            onClick={() => detectCategories('pattern')}
+                            disabled={isScraping}
+                            className="px-3 py-1 text-xs bg-yellow-100 text-yellow-800 rounded hover:bg-yellow-200 disabled:opacity-50"
+                          >
+                            路径聚合
+                          </button>
+                          <button
+                            onClick={() => detectCategories('auto')}
+                            disabled={isScraping}
+                            className="px-3 py-1 text-xs bg-yellow-100 text-yellow-800 rounded hover:bg-yellow-200 disabled:opacity-50"
+                          >
+                            重试
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
