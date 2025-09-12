@@ -31,7 +31,18 @@ export default function App() {
   const [detectedCategories, setDetectedCategories] = useState<any[]>([])
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set())
   const [showCategorySelection, setShowCategorySelection] = useState(false)
-  const [expandedCategoryNames, setExpandedCategoryNames] = useState<Set<string>>(new Set())
+  
+  // 网页转RSS拖拽功能状态
+  const [segGroups, setSegGroups] = useState<any[]>([])
+  const [segGroupsLocal, setSegGroupsLocal] = useState<any[]>([])
+  const [dragSelectedTitle, setDragSelectedTitle] = useState('')
+  const [dragSelectedArticles, setDragSelectedArticles] = useState<any[]>([])
+  const [suggestedTitle, setSuggestedTitle] = useState('')
+  const [hiddenArticles, setHiddenArticles] = useState<Set<string>>(new Set())
+  const [isTitleEditing, setIsTitleEditing] = useState(false)
+  const [isCreatingRSS, setIsCreatingRSS] = useState(false)
+  const [creationProgress, setCreationProgress] = useState(0)
+  // const [updatingFeeds, setUpdatingFeeds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     console.log('App mounted')
@@ -85,24 +96,24 @@ export default function App() {
     }
   }
 
-  const loadFeeds = async () => {
-    if (!token) return
-    
-    try {
-      const response = await fetch('/api/feeds', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        setFeeds(data.feeds || data)
-      }
-    } catch (error) {
-      console.error('Failed to load feeds:', error)
-    }
-  }
+  // const loadFeeds = async () => {
+  //   if (!token) return
+  //   
+  //   try {
+  //     const response = await fetch('/api/feeds', {
+  //       headers: {
+  //         'Authorization': `Bearer ${token}`
+  //       }
+  //     })
+  //     
+  //     if (response.ok) {
+  //       const data = await response.json()
+  //       setFeeds(data.feeds || data)
+  //     }
+  //   } catch (error) {
+  //     console.error('Failed to load feeds:', error)
+  //   }
+  // }
 
   const importRSS = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -404,14 +415,44 @@ export default function App() {
     }
   }
 
-  // 网页转RSS相关函数
+  // const previewWebpage = async () => {
+  //   if (!webpageUrl.trim()) return
+  //   
+  //   setIsScraping(true)
+  //   try {
+  //     const response = await fetch('/api/feeds/webpage-preview', {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //         'Authorization': `Bearer ${token}`
+  //       },
+  //       body: JSON.stringify({ url: webpageUrl })
+  //     })
+  //     
+  //     if (response.ok) {
+  //       const data = await response.json()
+  //       setScrapedData(data)
+  //     } else {
+  //       const errorData = await response.json()
+  //       setErrorMessage(errorData.message || '网页预览失败')
+  //       setShowError(true)
+  //     }
+  //   } catch (error) {
+  //     console.error('Preview error:', error)
+  //     setErrorMessage('网络错误，请检查网络连接')
+  //     setShowError(true)
+  //   } finally {
+  //     setIsScraping(false)
+  //   }
+  // }
+
   const detectCategories = async () => {
     if (!webpageUrl.trim()) return
     
     setIsScraping(true)
     try {
-      // 同时获取网页快照和分类信息
-      const [snapshotResponse, categoriesResponse] = await Promise.all([
+      // 同时获取网页快照和分段信息
+      const [snapshotResponse, segmentationResponse] = await Promise.all([
         fetch('/api/feeds/webpage-snapshot', {
           method: 'POST',
           headers: {
@@ -420,25 +461,28 @@ export default function App() {
           },
           body: JSON.stringify({ url: webpageUrl })
         }),
-        fetch('/api/feeds/webpage-categories', {
+        fetch('/api/feeds/webpage-segmentation', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ url: webpageUrl })
+          body: JSON.stringify({ url: webpageUrl, mode: 'auto' })
         })
       ])
       
-      if (snapshotResponse.ok && categoriesResponse.ok) {
+      if (snapshotResponse.ok && segmentationResponse.ok) {
         const snapshotData = await snapshotResponse.json()
-        const categoriesData = await categoriesResponse.json()
+        const segmentationData = await segmentationResponse.json()
         
         setScrapedData(snapshotData)
-        setDetectedCategories(categoriesData.categories || [])
+        setDetectedCategories(segmentationData.groups || [])
+        setSegGroups(segmentationData.groups || [])
+        setSegGroupsLocal(segmentationData.groups || [])
+        setSuggestedTitle(segmentationData.suggestedTitle || '')
         setShowCategorySelection(true)
       } else {
-        const errorData = await snapshotResponse.json()
+        const errorData = await snapshotResponse.json().catch(() => ({}))
         setErrorMessage(errorData.message || '网页分析失败')
         setShowError(true)
       }
@@ -451,8 +495,117 @@ export default function App() {
     }
   }
 
+  // 拖拽处理函数
+  const handleDragStart = (e: React.DragEvent, type: 'title' | 'article', data: any) => {
+    e.dataTransfer.setData('application/json', JSON.stringify({ type, data }))
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+  }
+
+  const handleDrop = (e: React.DragEvent, targetType: 'title' | 'articles') => {
+    e.preventDefault()
+    const data = JSON.parse(e.dataTransfer.getData('application/json'))
+    
+    if (data.type === 'title' && targetType === 'title') {
+      setDragSelectedTitle(data.data)
+    } else if (data.type === 'article' && targetType === 'articles') {
+      setDragSelectedArticles(prev => [...prev, data.data])
+    }
+  }
+
+  // 删除文章
+  const removeArticle = (articleLink: string) => {
+    setDragSelectedArticles(prev => prev.filter(article => article.link !== articleLink))
+  }
+
+  // 隐藏文章
+  const hideArticle = (articleLink: string) => {
+    setHiddenArticles(prev => new Set([...prev, articleLink]))
+  }
+
+  // 恢复已删除的文章
+  const restoreHiddenArticles = () => {
+    setHiddenArticles(new Set())
+  }
+
+  // 创建RSS
+  const createRSS = async () => {
+    if (!dragSelectedTitle && !suggestedTitle) {
+      alert('请选择或输入标题')
+      return
+    }
+    
+    if (dragSelectedArticles.length === 0) {
+      alert('请选择至少一篇文章')
+      return
+    }
+
+    setIsCreatingRSS(true)
+    setCreationProgress(0)
+
+    try {
+      // 模拟进度
+      const progressInterval = setInterval(() => {
+        setCreationProgress(prev => Math.min(prev + 10, 90))
+      }, 100)
+
+      const response = await fetch('/api/feeds/webpage-build-rss', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          url: webpageUrl,
+          titleToken: dragSelectedTitle || suggestedTitle,
+          articles: dragSelectedArticles
+        })
+      })
+
+      clearInterval(progressInterval)
+      setCreationProgress(100)
+
+      if (response.ok) {
+        const data = await response.json()
+        setFeeds(prev => [...prev, { 
+          id: data.id, 
+          title: data.title, 
+          url: webpageUrl,
+          groupId: null,
+          group: null
+        }])
+        
+        // 重置状态
+        setDragSelectedTitle('')
+        setDragSelectedArticles([])
+        setSuggestedTitle('')
+        setSegGroups([])
+        setSegGroupsLocal([])
+        setHiddenArticles(new Set())
+        setShowCategorySelection(false)
+        setWebpageUrl('')
+        setScrapedData(null)
+        
+        alert(`成功创建RSS订阅源：${data.title}，包含 ${data.articlesCount} 篇文章`)
+      } else {
+        const errorData = await response.json()
+        setErrorMessage(errorData.message || '创建RSS失败')
+        setShowError(true)
+      }
+    } catch (error) {
+      console.error('RSS creation error:', error)
+      setErrorMessage('网络错误，请检查网络连接')
+      setShowError(true)
+    } finally {
+      setIsCreatingRSS(false)
+      setCreationProgress(0)
+    }
+  }
+
   const createCategoryRSS = async () => {
-    if (!token || selectedCategories.size === 0) return
+    if (selectedCategories.size === 0) return
     
     setIsScraping(true)
     try {
@@ -460,20 +613,22 @@ export default function App() {
         selectedCategories.has(cat.name)
       )
       
-      const response = await fetch('/api/feeds/webpage-categories-rss', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ 
-          url: webpageUrl,
-          categories: selectedCategoryData.map(cat => ({
-            name: cat.name,
-            articles: cat.articles || []
-          }))
-        })
-      })
+                    const response = await fetch('/api/feeds/webpage-categories-rss', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                      },
+                      body: JSON.stringify({ 
+                        baseUrl: webpageUrl,
+                        categories: selectedCategoryData.map(cat => ({
+                          name: cat.name,
+                          url: cat.url,
+                          selector: cat.selector,
+                          articles: cat.articles || []
+                        }))
+                      })
+                    })
       
       if (response.ok) {
         const data = await response.json()
@@ -501,6 +656,74 @@ export default function App() {
       setIsScraping(false)
     }
   }
+
+  // const updateWebpageFeed = async (feedId: string) => {
+  //   if (!token) return
+  //   
+  //   setUpdatingFeeds(prev => new Set(prev).add(feedId))
+  //   try {
+  //     const response = await fetch(`/api/feeds/webpage-update/${feedId}`, {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //         'Authorization': `Bearer ${token}`
+  //       }
+  //     })
+  //     
+  //     if (response.ok) {
+  //       const data = await response.json()
+  //       // 重新加载文章列表
+  //       await loadItems(feedId)
+  //       alert(data.message || '更新成功！')
+  //     } else {
+  //       const errorData = await response.json()
+  //       setErrorMessage(errorData.message || '更新失败')
+  //       setShowError(true)
+  //     }
+  //   } catch (error) {
+  //     console.error('Webpage update error:', error)
+  //     setErrorMessage('网络错误，请检查网络连接')
+  //     setShowError(true)
+  //   } finally {
+  //     setUpdatingFeeds(prev => {
+  //       const newSet = new Set(prev)
+  //       newSet.delete(feedId)
+  //       return newSet
+  //     })
+  //   }
+  // }
+
+  // const updateAllWebpageFeeds = async () => {
+  //   if (!token) return
+  //   
+  //   setIsScraping(true)
+  //   try {
+  //     const response = await fetch('/api/feeds/webpage-update-all', {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //         'Authorization': `Bearer ${token}`
+  //       }
+  //     })
+  //     
+  //     if (response.ok) {
+  //       const data = await response.json()
+  //       // 重新加载所有文章
+  //       await loadAllItems()
+  //       alert(data.message || '批量更新完成！')
+  //     } else {
+  //       const errorData = await response.json()
+  //       setErrorMessage(errorData.message || '批量更新失败')
+  //       setShowError(true)
+  //     }
+  //   } catch (error) {
+  //     console.error('Batch update error:', error)
+  //     setErrorMessage('网络错误，请检查网络连接')
+  //     setShowError(true)
+  //   } finally {
+  //     setIsScraping(false)
+  //   }
+  // }
 
   const createWebpageRSS = async () => {
     if (!webpageUrl.trim() || !selectors.title.trim()) return
@@ -556,7 +779,7 @@ export default function App() {
   }
 
   if (!mounted) {
-    return (
+  return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
           <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
@@ -577,7 +800,7 @@ export default function App() {
           className="relative z-50 bg-black/20 border-b border-white/10 sticky top-0" 
           style={{backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)'}}
         >
-          <div className="max-w-7xl mx-auto px-6">
+          <div className="max-w-[95vw] mx-auto px-6">
             <div className="flex justify-between items-center h-16">
               <div className="flex items-center">
                 <div className="w-8 h-8 bg-white rounded-xl flex items-center justify-center shadow-lg">
@@ -591,7 +814,7 @@ export default function App() {
 
         {/* Apple 风格 Hero 区域 */}
         <div className="relative z-10">
-          <div className="max-w-7xl mx-auto px-6 pt-20 pb-32">
+          <div className="max-w-[95vw] mx-auto px-6 pt-20 pb-32">
             <div className="text-center">
               <h1 className="text-6xl md:text-7xl font-bold text-white mb-6 tracking-tight">
                 个人专属的
@@ -646,7 +869,7 @@ export default function App() {
                           required 
                         />
                       </div>
-                      <button className="w-full bg-white text-black py-4 px-6 rounded-2xl font-semibold text-lg hover:bg-gray-100 transition-all duration-200 shadow-lg hover:shadow-xl">
+                      <button className="w-full bg-black text-white py-4 px-6 rounded-2xl font-semibold text-lg hover:bg-gray-800 transition-all duration-200 shadow-lg hover:shadow-xl">
                         登录
                       </button>
                     </form>
@@ -707,7 +930,7 @@ export default function App() {
         className="relative z-50 bg-white/80 border-b border-gray-200/50 sticky top-0" 
         style={{backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)'}}
       >
-        <div className="max-w-7xl mx-auto px-6">
+        <div className="max-w-[95vw] mx-auto px-6">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center">
               <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-sm">
@@ -731,7 +954,7 @@ export default function App() {
         </div>
       </nav>
 
-      <div className="relative z-10 max-w-7xl mx-auto px-6 py-8">
+      <div className="relative z-10 max-w-[95vw] mx-auto px-6 py-8">
         <div className="grid lg:grid-cols-5 gap-8">
           {/* 左侧：功能面板 */}
           <div className="lg:col-span-2 space-y-6">
@@ -828,7 +1051,7 @@ export default function App() {
                   type="submit"
                   className="w-full bg-purple-600 text-white py-4 px-6 rounded-2xl font-semibold text-sm hover:bg-purple-700 transition-all duration-200 shadow-sm hover:shadow-md active:scale-95"
                 >
-                  智能分类
+                  转换网页
                 </button>
               </form>
             </div>
@@ -937,6 +1160,21 @@ export default function App() {
                                     </svg>
                                   </div>
                                 </div>
+                                {/* 自动更新标识 */}
+                                {feed.type === 'webpage' && (
+                                  <div className="p-2 text-green-500" title="网页转RSS - 每20分钟自动更新">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                  </div>
+                                )}
+                                {feed.type === 'rss' && (
+                                  <div className="p-2 text-blue-500" title="RSS订阅源 - 每10秒自动更新">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                  </div>
+                                )}
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
@@ -1110,9 +1348,21 @@ export default function App() {
             >
               <div className="p-8 border-b border-gray-200/50">              
                 <div className="flex items-center justify-between mb-4">          
-                  <div>
+      <div>
                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">文章列表</h2>  
                     <p className="text-sm text-gray-500 mt-1">浏览最新内容</p>                         
+                  </div>
+                  {/* 自动更新状态提示 */}
+                  <div className="px-4 py-2 text-sm text-gray-600 bg-gray-50 rounded-lg">
+                    <div className="flex items-center space-x-2">
+                      <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>自动更新已启用</span>
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      RSS: 每10秒 | 网页RSS: 每20分钟
+                    </div>
                   </div>
                 </div>
                 
@@ -1139,7 +1389,7 @@ export default function App() {
                       }`}
                     >
                       📁 {group.name}
-        </button>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1185,19 +1435,35 @@ export default function App() {
                             </div>
                           </div>
                           <div className="ml-4 flex-shrink-0 flex flex-col items-end space-y-2">
-                            {item.link && (
-                              <a
-                                href={item.link}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
-                              >
-                                阅读原文
-                                <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                </svg>
-                              </a>
-                            )}
+                            <div className="flex space-x-2">
+                              {item.link && (
+                                <a
+                                  href={item.link}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+                                >
+                                  阅读原文
+                                  <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                  </svg>
+                                </a>
+                              )}
+                              {/* 为网页转RSS的文章添加原始网页链接 */}
+                              {item.originalUrl && (
+                                <a
+                                  href={item.originalUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center px-3 py-2 text-sm font-medium text-purple-600 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
+                                >
+                                  原始网页
+                                  <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                  </svg>
+                                </a>
+                              )}
+      </div>
                             {/* 只在"全部"视图中显示分组标签，具体分组视图中隐藏 */}
                             {!selectedGroupId && item.feed?.group && (
                               <span 
@@ -1222,209 +1488,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* 网页转RSS模态框 */}
-      {showWebpageModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-                    <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                    </svg>
-                  </div>
-                  <h3 className="text-lg font-semibold text-gray-900">网页转RSS</h3>
-                </div>
-                <button
-                  onClick={() => {
-                    setShowWebpageModal(false)
-                    setWebpageUrl('')
-                    setSelectors({ title: '', content: '', link: '', time: '' })
-                    setScrapedData(null)
-                  }}
-                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            <div className="p-6 max-h-[calc(90vh-120px)] overflow-y-auto">
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">网页地址</label>
-                  <div className="flex space-x-3">
-                    <input
-                      type="url"
-                      value={webpageUrl}
-                      onChange={(e) => setWebpageUrl(e.target.value)}
-                      placeholder="https://example.com/news"
-                      className="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      required
-                      readOnly
-                    />
-                    <button
-                      type="button"
-                      onClick={detectCategories}
-                      disabled={!webpageUrl.trim() || isScraping}
-                      className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isScraping ? '检测中...' : '智能分类'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* 网页快照 */}
-                {scrapedData && (
-                  <div className="space-y-4">
-                    <h4 className="text-sm font-medium text-gray-700">网页快照</h4>
-                    <div className="border border-gray-200 rounded-lg overflow-hidden">
-                      <img 
-                        src={scrapedData.screenshot} 
-                        alt="网页快照" 
-                        className="w-full h-auto"
-                        style={{ maxHeight: '400px', objectFit: 'contain' }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* 智能分类选择 */}
-                {showCategorySelection && detectedCategories.length > 0 && (
-                  <div className="space-y-4">
-                    <h4 className="text-sm font-medium text-gray-700">选择要创建RSS的分类</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {detectedCategories.map((category, index) => {
-                        const isExpanded = expandedCategoryNames.has(category.name)
-                        const total = category.articles ? category.articles.length : 0
-                        const list = category.articles ? (isExpanded ? category.articles : category.articles.slice(0, 3)) : []
-                        return (
-                          <div key={index} className="border border-gray-200 rounded-lg p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <label className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedCategories.has(category.name)}
-                                  onChange={(e) => {
-                                    const newSelected = new Set(selectedCategories)
-                                    if (e.target.checked) {
-                                      newSelected.add(category.name)
-                                    } else {
-                                      newSelected.delete(category.name)
-                                    }
-                                    setSelectedCategories(newSelected)
-                                  }}
-                                  className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                                />
-                                <span className="text-sm font-medium text-gray-900">{category.name}</span>
-                              </label>
-                              <div className="flex items-center space-x-3">
-                                <span className="text-xs text-gray-500">
-                                  {total} 篇文章
-                                </span>
-                                {total > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const next = new Set(expandedCategoryNames)
-                                      if (next.has(category.name)) next.delete(category.name)
-                                      else next.add(category.name)
-                                      setExpandedCategoryNames(next)
-                                    }}
-                                    className="text-xs text-purple-600 hover:text-purple-700"
-                                  >
-                                    {isExpanded ? '收起' : '展开'}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            {list && list.map((article: any, articleIndex: number) => (
-                              <div key={articleIndex} className="text-xs text-gray-700 bg-gray-50 p-2 rounded border mb-1">
-                                {article.title || article.text || article.link}
-                              </div>
-                            ))}
-                            {total > 3 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const next = new Set(expandedCategoryNames)
-                                  if (next.has(category.name)) next.delete(category.name)
-                                  else next.add(category.name)
-                                  setExpandedCategoryNames(next)
-                                }}
-                                className="text-[11px] text-purple-600 mt-1 hover:text-purple-700"
-                              >
-                                {isExpanded ? '收起' : '展开可查看全部'}
-                              </button>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                    <div className="flex space-x-2">
-                      <button
-                        onClick={() => {
-                          const allNames = detectedCategories.map(cat => cat.name)
-                          setSelectedCategories(new Set(allNames))
-                        }}
-                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
-                      >
-                        全选
-                      </button>
-                      <button
-                        onClick={() => setSelectedCategories(new Set())}
-                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
-                      >
-                        全不选
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* 操作按钮 */}
-                <div className="flex space-x-3 pt-4 border-t border-gray-200">
-                  <button
-                    onClick={() => {
-                      setShowWebpageModal(false)
-                      setShowCategorySelection(false)
-                      setWebpageUrl('')
-                      setSelectors({ title: '', content: '', link: '', time: '' })
-                      setScrapedData(null)
-                      setDetectedCategories([])
-                      setSelectedCategories(new Set())
-                    }}
-                    className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-                  >
-                    取消
-                  </button>
-                  
-                  {showCategorySelection ? (
-                    <button
-                      onClick={createCategoryRSS}
-                      disabled={selectedCategories.size === 0 || isScraping}
-                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isScraping ? '创建中...' : `创建 ${selectedCategories.size} 个分类RSS`}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={createWebpageRSS}
-                      disabled={!webpageUrl.trim() || !selectors.title.trim() || isScraping}
-                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isScraping ? '创建中...' : '创建RSS订阅源'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 错误弹窗 */}
       {showError && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -1441,10 +1504,10 @@ export default function App() {
             <div className="flex space-x-3">
               <button
                 onClick={() => setShowError(false)}
-                className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                className="flex-1 px-4 py-2 text-white bg-gray-600 rounded-lg hover:bg-gray-700 transition-colors"
               >
                 关闭
-              </button>
+        </button>
               <button
                 onClick={() => {
                   setShowError(false)
@@ -1454,7 +1517,7 @@ export default function App() {
               >
                 重试
               </button>
-            </div>
+      </div>
           </div>
         </div>
       )}
@@ -1502,6 +1565,277 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 网页转RSS模态框 */}
+      {showWebpageModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                    <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-gray-900">网页转RSS</h3>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowWebpageModal(false)
+                    setWebpageUrl('')
+                    setSelectors({ title: '', content: '', link: '', time: '' })
+                    setScrapedData(null)
+                  }}
+                  className="p-2 text-white hover:text-gray-300 hover:bg-white/20 rounded-lg transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
+              <div className="space-y-6">
+                {/* 网页URL输入 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">网页地址</label>
+                  <div className="flex space-x-3">
+                    <input
+                      type="url"
+                      value={webpageUrl}
+                      onChange={(e) => setWebpageUrl(e.target.value)}
+                      placeholder="https://example.com/news"
+                      className="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={detectCategories}
+                      disabled={!webpageUrl.trim() || isScraping}
+                      className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                    >
+                      {isScraping ? '检测中...' : '智能分类'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 网页快照 */}
+                {scrapedData && (
+                  <div className="space-y-4">
+                    <h4 className="text-md font-semibold text-gray-900">网页快照</h4>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      {scrapedData.screenshot ? (
+                        <div className="relative overflow-hidden rounded-lg border border-gray-200 shadow-sm">
+                          <img 
+                            src={scrapedData.screenshot} 
+                            alt="网页截图" 
+                            className="w-full"
+                            style={{ maxHeight: '400px', objectFit: 'contain' }}
+                          />
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-gray-500">
+                          网页快照正在加载...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* 智能分类选择 */}
+                {showCategorySelection && detectedCategories.length > 0 && (
+                  <div className="space-y-4">
+                    <h4 className="text-md font-semibold text-gray-900">检测到的网站分类</h4>
+                    <p className="text-sm text-gray-600">选择您想要订阅的分类，系统将自动为每个分类创建RSS订阅源</p>
+                    
+                    <div className="space-y-3 max-h-64 overflow-y-auto">
+                      {detectedCategories.map((category, index) => (
+                        <div key={index} className="category-item border border-gray-200 rounded-lg">
+                          <label className="flex items-center space-x-3 p-3 hover:bg-gray-50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedCategories.has(category.name)}
+                              onChange={(e) => {
+                                const newSelected = new Set(selectedCategories)
+                                if (e.target.checked) {
+                                  newSelected.add(category.name)
+                                } else {
+                                  newSelected.delete(category.name)
+                                }
+                                setSelectedCategories(newSelected)
+                              }}
+                              className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                            />
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-gray-900">{category.name}</div>
+                              <div className="text-xs text-gray-500">
+                                {category.articleCount} 篇文章
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                // 切换展开状态
+                                const categoryElement = e.currentTarget.closest('.category-item')
+                                if (categoryElement) {
+                                  const preview = categoryElement.querySelector('.category-preview')
+                                  if (preview) {
+                                    preview.classList.toggle('hidden')
+                                  }
+                                }
+                              }}
+                              className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </button>
+                          </label>
+                          
+                          {/* 文章预览 */}
+                          <div className="category-preview hidden px-3 pb-3">
+                            <div className="text-xs text-gray-500 mb-2">文章预览:</div>
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                              {category.articles && category.articles.slice(0, 5).map((article: any, articleIndex: number) => (
+                                <div key={articleIndex} className="text-xs text-gray-600 bg-white p-2 rounded border">
+                                  {article.text}
+                                </div>
+                              ))}
+                              {category.articles && category.articles.length > 5 && (
+                                <div className="text-xs text-gray-400 text-center">
+                                  ... 还有 {category.articles.length - 5} 篇文章
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    <div className="flex items-center justify-between pt-2">
+                      <div className="text-sm text-gray-600">
+                        已选择 {selectedCategories.size} 个分类
+                      </div>
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => {
+                            setSelectedCategories(new Set(detectedCategories.map(cat => cat.name)))
+                          }}
+                          className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                        >
+                          全选
+                        </button>
+                        <button
+                          onClick={() => setSelectedCategories(new Set())}
+                          className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                        >
+                          清空
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+
+                {/* 选择器配置 */}
+                {scrapedData && !showCategorySelection && (
+                  <div className="space-y-4">
+                    <h4 className="text-md font-semibold text-gray-900">配置内容选择器</h4>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">标题选择器 *</label>
+                        <input
+                          type="text"
+                          value={selectors.title}
+                          onChange={(e) => setSelectors(prev => ({ ...prev, title: e.target.value }))}
+                          placeholder="例如: .news-title, h2, .article-title"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          required
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">内容选择器</label>
+                        <input
+                          type="text"
+                          value={selectors.content}
+                          onChange={(e) => setSelectors(prev => ({ ...prev, content: e.target.value }))}
+                          placeholder="例如: .news-content, .article-body"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">链接选择器</label>
+                        <input
+                          type="text"
+                          value={selectors.link}
+                          onChange={(e) => setSelectors(prev => ({ ...prev, link: e.target.value }))}
+                          placeholder="例如: a, .news-link"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">时间选择器</label>
+                        <input
+                          type="text"
+                          value={selectors.time}
+                          onChange={(e) => setSelectors(prev => ({ ...prev, time: e.target.value }))}
+                          placeholder="例如: .publish-time, .date"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+
+                {/* 操作按钮 */}
+                <div className="flex space-x-3 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={() => {
+                      setShowWebpageModal(false)
+                      setShowCategorySelection(false)
+                      setWebpageUrl('')
+                      setSelectors({ title: '', content: '', link: '', time: '' })
+                      setScrapedData(null)
+                      setDetectedCategories([])
+                      setSelectedCategories(new Set())
+                    }}
+                    className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    取消
+                  </button>
+                  
+                  {showCategorySelection ? (
+                    <button
+                      onClick={createCategoryRSS}
+                      disabled={selectedCategories.size === 0 || isScraping}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '创建中...' : `创建 ${selectedCategories.size} 个分类RSS`}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={createWebpageRSS}
+                      disabled={!webpageUrl.trim() || !selectors.title.trim() || isScraping}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '创建中...' : '创建RSS订阅源'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       )}

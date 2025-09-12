@@ -4,6 +4,7 @@ import Parser from 'rss-parser';
 import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
 import { z } from 'zod';
+import * as iconv from 'iconv-lite';
 
 const prisma = new PrismaClient();
 const parser = new Parser();
@@ -905,5 +906,582 @@ export async function feedRoutes(app: FastifyInstance) {
       });
     }
   });
+
+  // 网页快照功能
+  app.post('/webpage-snapshot', async (req, reply) => {
+    const schema = z.object({ url: z.string().url() });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
+
+    const { url } = parsed.data;
+    
+    let browser;
+    try {
+      // 优化为快速预览模式
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-images', // 禁用图片加载以加快速度
+          '--disable-javascript', // 禁用JS以加快速度
+          '--disable-web-security',
+          '--disable-features=VizDisplayCompositor',
+          '--window-size=1200,800' // 减小窗口尺寸
+        ]
+      });
+
+      const page = await browser.newPage();
+      
+      // 设置更短的超时时间
+      page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(5000);
+      
+      await page.setViewport({ width: 1200, height: 800 });
+      await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      // 快速导航，只等待DOM加载完成
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 5000 // 进一步减少超时时间
+      });
+
+      // 简单等待，不进行复杂滚动
+      await page.waitForTimeout(200);
+
+      // 只截取可见区域，不截取全页面
+      const screenshot = await page.screenshot({
+        type: 'jpeg',
+        quality: 60, // 进一步降低质量
+        clip: { x: 0, y: 0, width: 1200, height: 800 } // 只截取可见区域
+      });
+      
+      await browser.close();
+
+      return {
+        screenshot: `data:image/jpeg;base64,${screenshot.toString('base64')}`,
+        url
+      };
+    } catch (error) {
+      console.error('网页快照失败:', error);
+      if (browser) {
+        try { await browser.close(); } catch {}
+      }
+      // 返回SVG占位符
+      const svgPlaceholder = `<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100%" height="100%" fill="#f3f4f6"/>
+        <text x="50%" y="50%" text-anchor="middle" fill="#6b7280" font-family="Arial, sans-serif" font-size="16">
+          网页快照生成失败
+        </text>
+      </svg>`;
+      
+      return { 
+        screenshot: `data:image/svg+xml;base64,${Buffer.from(svgPlaceholder).toString('base64')}`,
+        url: url,
+        error: 'Screenshot generation failed'
+      };
+    }
+  });
+
+  // 根据用户选择生成RSS订阅源
+  app.post('/webpage-build-rss', async (req, reply) => {
+    const schema = z.object({
+      url: z.string().url(),
+      titleToken: z.string(),
+      articles: z.array(z.object({ title: z.string(), link: z.string(), pubDate: z.string().optional() }))
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid payload' });
+
+    const userId = (req as any).user?.sub as string;
+    const { url, titleToken, articles } = parsed.data;
+    
+    try {
+      const host = new URL(url).hostname;
+      const safeTitle = `${host}/${titleToken}`.replace(/[\n\r\t]+/g, ' ').slice(0, 180);
+
+      // 校验用户是否存在
+      const userExists = await prisma.user.findUnique({ where: { id: userId } });
+      if (!userExists) {
+        return reply.code(401).send({ error: 'Invalid user', message: '用户不存在或登录已过期，请重新登录' });
+      }
+
+      // 过滤无效/跨域/重复链接
+      const seen = new Set<string>();
+      const filtered = articles
+        .map(a => {
+          try {
+            const u = new URL(a.link);
+            return { ...a, link: u.href };
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+        .filter((a: any) => {
+          try {
+            return new URL(a.link).hostname === host;
+          } catch { return false; }
+        })
+        .filter((a: any) => {
+          if (seen.has(a.link)) return false;
+          seen.add(a.link);
+          return true;
+        })
+        .slice(0, 50) as Array<{ title: string; link: string; pubDate?: string }>;
+
+      if (filtered.length === 0) {
+        return reply.code(400).send({ error: 'No valid articles', message: '未找到有效的文章链接（需要与站点同域且为有效URL）' });
+      }
+
+      const feed = await prisma.feed.create({
+        data: { title: safeTitle, url, userId, groupId: null }
+      });
+
+      let created = 0;
+      for (const a of filtered) {
+        try {
+          await prisma.item.create({
+            data: {
+              title: a.title?.slice(0, 300) || '无标题',
+              link: a.link,
+              published: a.pubDate ? new Date(a.pubDate) : new Date(),
+              feedId: feed.id
+            }
+          });
+          created++;
+        } catch (err) {
+          // 跳过个别失败，不中断
+        }
+      }
+      return { id: feed.id, title: feed.title, articlesCount: created };
+    } catch (e: any) {
+      const msg = e?.message || 'unknown error';
+      return reply.code(500).send({ error: 'Failed to build rss', message: msg });
+    }
+  });
+
+  // 网页分段功能
+  app.post('/webpage-segmentation', async (req, reply) => {
+    const schema = z.object({ 
+      url: z.string().url(), 
+      mode: z.enum(['auto','headings','cluster','pattern']).optional() 
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
+
+    const { url, mode = 'auto' } = parsed.data;
+    
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        timeout: 25000
+      });
+      
+      if (!response.ok) return reply.code(400).send({ error: 'Failed to fetch webpage' });
+      
+      // 编码处理
+      const ct = response.headers.get('content-type') || '';
+      const buf = Buffer.from(await response.arrayBuffer());
+      let charset = 'utf-8';
+      if (/charset=([^;]+)/i.test(ct)) {
+        const m = ct.match(/charset=([^;]+)/i);
+        if (m) charset = m[1].toLowerCase();
+      } else {
+        const head = buf.slice(0, 2048).toString('ascii');
+        const m2 = head.match(/charset\s*=\s*([a-zA-Z0-9-]+)/i);
+        if (m2) charset = m2[1].toLowerCase();
+      }
+      
+      if (charset.includes('gbk') || charset.includes('gb2312')) {
+        if (!iconv.encodingExists('gbk')) charset = 'utf-8';
+      }
+      
+      const html = (charset.includes('gbk') || charset.includes('gb2312'))
+        ? iconv.decode(buf, 'gbk')
+        : buf.toString('utf-8');
+      
+      let groups: Array<{ heading: string; articles: any[] }> = [];
+      
+      // 提取建议标题
+      const $meta = cheerio.load(html);
+      function extractSuggestedTitle(): string | null {
+        try {
+          const textSel = $meta('*').filter((_, e) => /当前位置/.test($meta(e).text())).first();
+          if (textSel && textSel.length) {
+            const html = $meta(textSel).html() || '';
+            const match = html.match(/当前位置[:：]\s*(.+)/);
+            if (match) {
+              const breadcrumbHtml = match[1];
+              const linkTexts: string[] = [];
+              const $breadcrumb = cheerio.load(breadcrumbHtml);
+              $breadcrumb('a').each((_, a) => {
+                const text = $breadcrumb(a).text().trim();
+                if (text) linkTexts.push(text);
+              });
+              if (linkTexts.length === 0) {
+                const cleanText = breadcrumbHtml
+                  .replace(/<[^>]+>/g, '')
+                  .replace(/&nbsp;/g, ' ')
+                  .replace(/&gt;/g, '>')
+                  .replace(/&lt;/g, '<')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                const tokens = cleanText.split(/[>＞]/).map(s=>s.trim()).filter(Boolean);
+                const cleaned = tokens.filter(p => !/^首页$/.test(p) && p.length <= 20);
+                if (cleaned.length) return cleaned[cleaned.length - 1];
+              } else {
+                const cleaned = linkTexts.filter(p => !/^首页$/.test(p) && p.length <= 20);
+                if (cleaned.length) return cleaned[cleaned.length - 1];
+              }
+            }
+          }
+          
+          const candidates = [
+            '.breadcrumb', 'nav.breadcrumb', '.crumb', '.breadcrumbs', '.position', '.sitepath', '.path', '.m-crumb', '.location', '.loc'
+          ];
+          for (const sel of candidates) {
+            const el = $meta(sel).first();
+            if (el && el.length) {
+              const parts: string[] = [];
+              el.find('a, span, li').each((_, x) => {
+                const t = $meta(x).text().trim();
+                if (t) parts.push(t);
+              });
+              const cleaned = parts.filter(p => !/^首页$/.test(p) && p.length <= 20);
+              if (cleaned.length) return cleaned[cleaned.length - 1];
+            }
+          }
+          
+          $meta('*').each((_, el) => {
+            const text = $meta(el).text().trim();
+            if (text.includes('>') || text.includes('＞')) {
+              const tokens = text.split(/[>＞]/).map(s=>s.trim()).filter(Boolean);
+              const cleaned = tokens.filter(p => !/^首页$/.test(p) && p.length <= 20);
+              if (cleaned.length >= 2) return cleaned[cleaned.length - 1];
+            }
+          });
+          
+        } catch {}
+        
+        try {
+          const title = $meta('title').first().text().trim();
+          if (title) return title.slice(0, 30);
+        } catch {}
+        return null;
+      }
+      
+      const suggestedTitle = extractSuggestedTitle();
+      
+      // 分段策略
+      const runHeadings = () => segmentByHeadings(url, html);
+      const runCluster = () => segmentByClusters(url, html);
+      const runPattern = () => segmentByPathPatterns(url, html);
+
+      if (mode === 'headings') groups = runHeadings();
+      else if (mode === 'cluster') groups = runCluster();
+      else if (mode === 'pattern') groups = runPattern();
+      else {
+        // auto模式：多策略合并
+        const a = runHeadings();
+        const b = runCluster();
+        const c = runPattern();
+        groups = [...a, ...b, ...c]
+          .sort((x,y)=> (y.articles?.length||0) - (x.articles?.length||0))
+          .filter((g,idx,self)=> self.findIndex(s=>s.heading===g.heading)===idx)
+          .slice(0,12);
+        if (!groups.length) groups = b.length ? b : c;
+      }
+      
+      const payload = groups.map(g => ({
+        titleToken: g.heading,
+        contentTokensPreview: g.articles[0]?.title || '',
+        articles: g.articles
+      })).slice(0, 15);
+      
+      return { groups: payload, suggestedTitle };
+    } catch (e) {
+      return reply.code(500).send({ error: 'Segmentation failed' });
+    }
+  });
+}
+
+// 基于标题分组的通用分段函数
+function segmentByHeadings(url: string, html: string) {
+  const $ = cheerio.load(html);
+  const hostname = new URL(url).hostname;
+
+  function isSameHost(href: string) {
+    try {
+      const u = new URL(href, url);
+      return u.hostname === hostname;
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizeUrl(href: string) {
+    try {
+      return new URL(href, url).href;
+    } catch {
+      return '';
+    }
+  }
+
+  const headingSelectors = 'h1, h2, h3';
+  const groups: Array<{ heading: string; articles: Array<{ title: string; link: string; pubDate: string }> }> = [];
+
+  // 站点与栏目定向规则
+  const isRecruitListPage = /hrss\.gd\.gov\.cn/.test(hostname) && /\/zwgk\/sydwzp\//.test(url);
+  const blacklistHeadingRegex = /(上级政府网站|各省市人社部门网站|各地市人社部门网站|业务网站|友情链接|网站地图|联系我们)/;
+  const recruitKeywordRegex = /(公告|公示|招聘|拟聘|集中公开招聘|高校毕业生)/;
+  const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
+
+  function isLikelyArticle(text: string, linkHref: string, contextHeading: string): boolean {
+    if (!text) return false;
+    if (blacklistHeadingRegex.test(contextHeading)) return false;
+    if (text.length < 2) return false; // 降低最小长度要求
+    
+    // 过滤明显的导航和页脚链接（更严格的匹配）
+    const navKeywords = /^(联系我们|交通指引|版权说明|网址域名|隐私保护|法律责任|网站地图|回到顶部|首页|上一页|下一页|更多|返回|登录|注册)$/;
+    if (navKeywords.test(text)) return false;
+    
+    // 过滤标题词条（这些不应该作为文章出现）
+    const titleKeywords = /^(政务公开|通知公告|政策解读|规范性文件|信息公开|工作动态|新闻中心|公告公示)$/;
+    if (titleKeywords.test(text)) return false;
+    
+    // 过滤分页数字和导航
+    if (/^(第一页|最后一页|\d+页?)$/.test(text)) return false;
+    
+    // 过滤纯数字或纯符号
+    if (/^[\d\s\-\.]+$/.test(text)) return false;
+    
+    // 对于招聘页面，放宽关键词要求
+    if (isRecruitListPage) {
+      const excludeKeywords = /^(首页|上一页|下一页|更多|返回|登录|注册|联系我们|交通指引|版权说明)$/;
+      if (excludeKeywords.test(text)) return false;
+      return true;
+    }
+    
+    // 对于其他页面，只要不是明显的导航词，就认为是文章
+    const excludeKeywords = /^(首页|上一页|下一页|更多|返回|登录|注册|联系我们|交通指引|版权说明|网站地图|回到顶部)$/;
+    if (excludeKeywords.test(text)) return false;
+    
+    return true;
+  }
+
+  $(headingSelectors).each((_, h) => {
+    const name = $(h).text().trim();
+    if (!name || name.length < 2 || name.length > 30) return;
+    if (/^首页$|关于|登录|联系我们/.test(name)) return;
+    if (blacklistHeadingRegex.test(name)) return;
+
+    const currentLevel = parseInt((h.tagName || 'h3').replace(/[^0-9]/g, '')) || 3;
+    const articles: any[] = [];
+    let walker = $(h).next();
+    let steps = 0;
+    while (walker.length && steps < 25) {
+      const tag = walker.get(0)?.tagName?.toLowerCase() || '';
+      if (/^h[1-3]$/.test(tag)) {
+        const level = parseInt(tag.replace('h', '')) || 3;
+        if (level <= currentLevel) break;
+      }
+      walker.find('a[href]').each((__, a) => {
+        const text = $(a).text().trim();
+        const href = $(a).attr('href') || '';
+        if (!text || !href) return;
+        if (text.length < 2 || text.length > 200) return; // 放宽长度限制
+        if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+        const full = normalizeUrl(href);
+        if (!full || !isSameHost(full)) return;
+        if (!isLikelyArticle(text, full, name)) return;
+        // 附加日期判定
+        let hasDate = dateRegex.test(text);
+        if (!hasDate) {
+          const near = $(a).parent().text();
+          hasDate = dateRegex.test(near);
+        }
+        // 对于招聘栏目，优先保留有日期的项
+        if (isRecruitListPage && !hasDate) return;
+        articles.push({ title: text.replace(/\s+/g, ' '), link: full, pubDate: new Date().toISOString() });
+      });
+      walker = walker.next();
+      steps++;
+    }
+    const seen = new Set<string>();
+    const unique = articles.filter(a => {
+      if (seen.has(a.link)) return false;
+      seen.add(a.link);
+      return true;
+    }).slice(0, 30);
+    if (unique.length >= 2) groups.push({ heading: name, articles: unique });
+  });
+
+  // 站点特例兜底
+  if (groups.length === 0 && isRecruitListPage) {
+    const fallbackArticles: Array<{ title: string; link: string; pubDate: string }> = [];
+    $('ul li a, .list a, .news-list a, .article-list a, .info-list a, a').each((_, a) => {
+      const text = $(a).text().trim();
+      const href = $(a).attr('href') || '';
+      if (!text || !href) return;
+      if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+      if (text.length < 5 || text.length > 120) return;
+      const full = normalizeUrl(href);
+      if (!full || !isSameHost(full)) return;
+      try {
+        const p = new URL(full).pathname;
+        if (!/\/zwgk\/sydwzp\//.test(p)) return;
+      } catch {}
+      const hasDate = dateRegex.test(text) || dateRegex.test($(a).parent().text());
+      if (!hasDate) return;
+      if (!isLikelyArticle(text, full, '事业单位公开招聘')) return;
+      fallbackArticles.push({ title: text.replace(/\s+/g, ' '), link: full, pubDate: new Date().toISOString() });
+    });
+    const seen2 = new Set<string>();
+    const uniq2 = fallbackArticles.filter(a => {
+      if (seen2.has(a.link)) return false;
+      seen2.add(a.link);
+      return true;
+    }).slice(0, 30);
+    if (uniq2.length >= 2) {
+      groups.push({ heading: '事业单位公开招聘', articles: uniq2 });
+    }
+  }
+
+  return groups;
+}
+
+// 通用分段B：链接簇聚类
+function segmentByClusters(url: string, html: string) {
+  const $ = cheerio.load(html);
+  const hostname = new URL(url).hostname;
+
+  function isSameHost(href: string) {
+    try {
+      const u = new URL(href, url);
+      return u.hostname === hostname;
+    } catch { return false; }
+  }
+  function normalizeUrl(href: string) {
+    try { return new URL(href, url).href; } catch { return ''; }
+  }
+  function getDomPath(el: cheerio.Element | undefined): string {
+    const parts: string[] = [];
+    let node: any = el;
+    let steps = 0;
+    while (node && node.type === 'tag' && steps < 6) {
+      const tag = node.tagName || node.name || 'div';
+      const cls = (node.attribs?.class || '').split(/\s+/).filter(Boolean).slice(0,2).join('.');
+      parts.unshift(cls ? `${tag}.${cls}` : tag);
+      node = node.parent;
+      steps++;
+    }
+    return parts.join('>');
+  }
+
+  const clusters: Record<string, Array<{ title: string; link: string; pubDate: string }>> = {};
+  $('a[href]').each((_, a) => {
+    const text = $(a).text().trim();
+    const href = $(a).attr('href') || '';
+    if (!text || !href) return;
+    if (text.length < 2 || text.length > 200) return; // 放宽长度限制
+    // 过滤导航和页脚链接
+    if (/(首页|上一页|下一页|更多|返回|联系我们|交通指引|版权说明|网址域名|隐私保护|法律责任|网站地图|回到顶部|登录|注册)/.test(text)) return;
+    const full = normalizeUrl(href);
+    if (!full || !isSameHost(full)) return;
+    // 路径前缀特征
+    let pathKey = '';
+    try { const u = new URL(full); pathKey = u.pathname.split('/').slice(0,3).join('/'); } catch {}
+    const domKey = getDomPath(a.parent as any);
+    const key = `${domKey}::${pathKey}`;
+    if (!clusters[key]) clusters[key] = [];
+    clusters[key].push({ title: text.replace(/\s+/g,' '), link: full, pubDate: new Date().toISOString() });
+  });
+
+  // 评分并生成分组
+  const scored: Array<{ key: string; score: number; items: any[] }>=[];
+  for (const [key, items] of Object.entries(clusters)) {
+    const seen = new Set(items.map(i=>i.link));
+    const uniq = items.filter(i=>{ if (seen.has(i.link)) return false; seen.delete(i.link); return true; });
+    const dateHit = uniq.slice(0,30).filter(i=>/(20\d{2}|\d{1,2}月|\d{1,2}-\d{1,2})/.test(i.title)).length;
+    const score = uniq.length + dateHit * 0.5;
+    if (uniq.length >= 3) scored.push({ key, score, items: uniq.slice(0,50) });
+  }
+  scored.sort((a,b)=>b.score-a.score);
+  return scored.slice(0,8).map(s=>({ heading: s.key.split('::')[0] || '内容列表', articles: s.items }));
+}
+
+// 通用分段C：路径模式聚合
+function segmentByPathPatterns(url: string, html: string) {
+  const $ = cheerio.load(html);
+  const hostname = new URL(url).hostname;
+  function isSameHost(href: string) { try { const u=new URL(href, url); return u.hostname===hostname; } catch { return false; } }
+  function normalizeUrl(href: string) { try { return new URL(href, url).href; } catch { return ''; } }
+
+  const buckets: Record<string, Array<{ title: string; link: string; pubDate: string }>> = {};
+  
+  // 简化的文章识别逻辑
+  $('a[href]').each((_, a) => {
+    const text = $(a).text().trim();
+    const href = $(a).attr('href') || '';
+    if (!text || !href) return;
+    
+    // 过滤明显的导航和页脚链接（更严格的匹配）
+    const navKeywords = /^(联系我们|交通指引|版权说明|网址域名|隐私保护|法律责任|网站地图|回到顶部|首页|上一页|下一页|更多|返回|登录|注册)$/;
+    if (navKeywords.test(text)) return;
+    
+    // 过滤标题词条（这些不应该作为文章出现）
+    if (/^(政务公开|通知公告|政策解读|规范性文件|信息公开|工作动态|新闻中心|公告公示)$/.test(text)) return;
+    
+    // 过滤分页数字和导航
+    if (/^(第一页|最后一页|\d+页?)$/.test(text)) return;
+    
+    // 过滤纯数字或纯符号
+    if (/^[\d\s\-\.]+$/.test(text)) return;
+    
+    const full = normalizeUrl(href);
+    if (!full || !isSameHost(full)) return;
+    try {
+      const u = new URL(full);
+      // 取目录前缀，生成更友好的标题
+      const parts = u.pathname.split('/').filter(Boolean);
+      let key = '';
+      if (parts.length >= 2) {
+        // 将路径转换为更友好的标题
+        const dirParts = parts.slice(0, 2);
+        if (dirParts[0] === 'zwgk') {
+          key = '政务公开';
+        } else if (dirParts[0] === 'wzdh') {
+          key = '网站导航';
+        } else if (dirParts[0] === 'news') {
+          key = '新闻资讯';
+        } else if (dirParts[0] === 'article') {
+          key = '文章列表';
+        } else {
+          key = dirParts.join('/');
+        }
+      } else if (parts.length === 1) {
+        key = parts[0];
+      } else {
+        key = '其他内容';
+      }
+      
+      if (!buckets[key]) buckets[key] = [];
+      buckets[key].push({ title: text.replace(/\s+/g,' '), link: full, pubDate: new Date().toISOString() });
+    } catch {}
+  });
+  
+  const result: Array<{ heading: string; articles: any[] }> = [];
+  for (const [k, arr] of Object.entries(buckets)) {
+    const seen = new Set<string>();
+    const uniq = arr.filter(a=>{ if (seen.has(a.link)) return false; seen.add(a.link); return true; });
+    if (uniq.length >= 3) result.push({ heading: k, articles: uniq.slice(0,50) });
+  }
+  result.sort((a,b)=>b.articles.length - a.articles.length);
+  return result.slice(0,8);
 }
 
