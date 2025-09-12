@@ -62,6 +62,13 @@ export default function App() {
   const [hasTitleBeenEdited, setHasTitleBeenEdited] = useState(false)
   // 网页快照加载状态
   const [isSnapshotLoading, setIsSnapshotLoading] = useState(false)
+  // 更新信息
+  const [updateInfo, setUpdateInfo] = useState<{
+    rssUpdateFrequency: number;
+    webpageUpdateFrequency: number;
+    lastRSSUpdate: string | null;
+    lastWebpageUpdate: string | null;
+  } | null>(null)
 
   useEffect(() => {
     console.log('App mounted')
@@ -75,11 +82,23 @@ export default function App() {
       if (storedToken) {
         loadFeedsWithToken(storedToken)
         loadGroupsWithToken(storedToken)
+        loadUpdateInfo()
       }
     } catch (error) {
       console.error('localStorage error:', error)
     }
   }, [])
+
+  // 定时刷新更新信息
+  useEffect(() => {
+    if (!token) return
+    
+    const interval = setInterval(() => {
+      loadUpdateInfo()
+    }, 5000) // 每5秒刷新一次更新信息
+    
+    return () => clearInterval(interval)
+  }, [token])
 
   const loadFeedsWithToken = async (authToken: string) => {
     try {
@@ -131,6 +150,25 @@ export default function App() {
       }
     } catch (error) {
       console.error('Failed to load feeds:', error)
+    }
+  }
+
+  const loadUpdateInfo = async () => {
+    if (!token) return
+    
+    try {
+      const response = await fetch('/api/feeds/update-info', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setUpdateInfo(data)
+      }
+    } catch (error) {
+      console.error('Failed to load update info:', error)
     }
   }
 
@@ -1303,6 +1341,24 @@ export default function App() {
                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">文章列表</h2>  
                     <p className="text-sm text-gray-500 mt-1">浏览最新内容</p>                         
       </div>
+                  {updateInfo && (
+                    <div className="text-right text-sm text-gray-500">
+                      <div className="space-y-1">
+                        <div>RSS更新: 每{updateInfo.rssUpdateFrequency}秒</div>
+                        <div>网页RSS更新: 每{updateInfo.webpageUpdateFrequency}分钟</div>
+                        {updateInfo.lastRSSUpdate && (
+                          <div className="text-xs">
+                            最后RSS更新: {new Date(updateInfo.lastRSSUpdate).toLocaleTimeString()}
+                          </div>
+                        )}
+                        {updateInfo.lastWebpageUpdate && (
+                          <div className="text-xs">
+                            最后网页更新: {new Date(updateInfo.lastWebpageUpdate).toLocaleTimeString()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
                 {/* 分组选择器 */}

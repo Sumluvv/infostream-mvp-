@@ -11,10 +11,13 @@ const parser = new Parser();
 
 // 实时更新机制
 let updateInterval: NodeJS.Timeout | null = null;
+let lastRSSUpdate: Date | null = null;
+let lastWebpageUpdate: Date | null = null;
 
 // 更新RSS订阅源
 async function updateRSSFeeds() {
   try {
+    lastRSSUpdate = new Date();
     const feeds = await prisma.feed.findMany({ include: { items: true } });
 
     for (const feed of feeds) {
@@ -608,6 +611,7 @@ function segmentByHeadings(url: string, html: string) {
 // 更新网页RSS订阅源（基于标题分组刷新）
 async function updateWebpageFeeds() {
   try {
+    lastWebpageUpdate = new Date();
     const feeds = await prisma.feed.findMany({});
 
     for (const feed of feeds) {
@@ -675,13 +679,13 @@ async function updateWebpageFeeds() {
 
 // 启动定时更新任务
 function startUpdateTasks() {
-  // RSS每10秒更新一次
-  updateInterval = setInterval(updateRSSFeeds, 10 * 1000);
+  // RSS每30秒更新一次
+  updateInterval = setInterval(updateRSSFeeds, 30 * 1000);
   
-  // 网页RSS每20分钟更新一次
-  setInterval(updateWebpageFeeds, 20 * 60 * 1000);
+  // 网页RSS每30分钟更新一次
+  setInterval(updateWebpageFeeds, 30 * 60 * 1000);
   
-  console.log('实时更新任务已启动: RSS每10秒, 网页RSS每20分钟');
+  console.log('实时更新任务已启动: RSS每30秒, 网页RSS每30分钟');
 }
 
 // 停止更新任务
@@ -722,6 +726,16 @@ export async function feedRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'asc' }
     });
     return { groups };
+  });
+
+  // 获取更新信息
+  app.get('/update-info', async (req, reply) => {
+    return {
+      rssUpdateFrequency: 30, // 30秒
+      webpageUpdateFrequency: 30, // 30分钟
+      lastRSSUpdate: lastRSSUpdate,
+      lastWebpageUpdate: lastWebpageUpdate
+    };
   });
 
   app.post('/import', async (req, reply) => {
