@@ -483,6 +483,38 @@ export default function App() {
       setIsScraping(false)
     }
   }
+            const catData = await catResp.json()
+            const mapped = (catData.categories || []).map((c: any) => ({
+              titleToken: c.name,
+              heading: c.name,
+              articles: (c.articles || [])
+            }))
+            setSegGroups(mapped)
+            setSegGroupsLocal(mapped.map((g: any) => ({ ...g, articles: [...(g.articles || [])] })))
+            setShowCategorySelection(true)
+          }
+        } catch {}
+      }
+
+      // 3) 再异步拉快照，不阻塞分组显示
+      fetch('/api/feeds/webpage-snapshot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ url: webpageUrl })
+      }).then(async r => {
+        if (r.ok) {
+          const d = await r.json()
+          setScrapedData(d)
+        }
+      }).catch(() => {})
+    } catch (error) {
+      console.error('Category detection error:', error)
+      setErrorMessage('网络错误，请检查网络连接')
+      setShowError(true)
+    } finally {
+      setIsScraping(false)
+    }
+  }
 
   // 新版：根据选择构建 RSS
   const buildFromSegSelection = async () => {
@@ -1356,471 +1388,574 @@ export default function App() {
         </div>
       </div>
 
-      {/* 导入RSS模态框 */}
-      {showImportModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div 
-            className="bg-white/90 border border-white/30 shadow-2xl rounded-3xl max-w-md w-full p-8" 
-            style={{
-              backdropFilter: 'blur(25px)', 
-              WebkitBackdropFilter: 'blur(25px)',
-              background: 'linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.7) 100%)'
-            }}
-          >
-            <h2 className="text-2xl font-semibold text-gray-900 mb-6">导入RSS订阅源</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">RSS链接</label>
-                <input
-                  type="url"
-                  value={importUrl}
-                  onChange={(e) => setImportUrl(e.target.value)}
-                  placeholder="https://example.com/rss"
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">分组</label>
-                <select
-                  value={importGroupId || ''}
-                  onChange={(e) => setImportGroupId(e.target.value || null)}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-                >
-                  <option value="">选择分组（可选）</option>
-                  {groups.map(group => (
-                    <option key={group.id} value={group.id}>
-                      {group.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div className="flex justify-end space-x-3 mt-8">
-              <button
-                onClick={() => setShowImportModal(false)}
-                className="px-6 py-3 text-gray-600 hover:text-gray-800 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={importRSS}
-                disabled={!importUrl.trim() || isImporting}
-                className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-xl"
-              >
-                {isImporting ? '导入中...' : '导入'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 网页转RSS模态框 */}
       {showWebpageModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div 
-            className="bg-white/90 border border-white/30 shadow-2xl rounded-3xl max-w-6xl w-full max-h-[90vh] overflow-hidden" 
-            style={{
-              backdropFilter: 'blur(25px)', 
-              WebkitBackdropFilter: 'blur(25px)',
-              background: 'linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.7) 100%)'
-            }}
-          >
-            <div className="p-8 border-b border-gray-200/50">
-              <h2 className="text-2xl font-semibold text-gray-900 mb-6">网页转RSS</h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">网页链接</label>
-                  <input
-                    type="url"
-                    value={webpageUrl}
-                    onChange={(e) => setWebpageUrl(e.target.value)}
-                    placeholder="https://example.com"
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">分段策略</label>
-                  <select
-                    value={segMode}
-                    onChange={(e) => setSegMode(e.target.value as any)}
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 appearance-none"
-                  >
-                    <option value="auto">自动 - 智能选择最佳策略</option>
-                    <option value="headings">标题归属 - 适合有清晰标题结构的页面</option>
-                    <option value="cluster">链接聚类 - 适合列表页面或链接密集的页面</option>
-                    <option value="pattern">路径聚合 - 适合URL结构规整的网站</option>
-                  </select>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                    <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-gray-900">网页转RSS</h3>
                 </div>
                 <button
-                  onClick={() => detectCategories(segMode)}
-                  disabled={!webpageUrl.trim() || isDetecting}
-                  className="w-full px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-xl"
+                  onClick={() => {
+                    setShowWebpageModal(false)
+                    setWebpageUrl('')
+                    setSelectors({ title: '', content: '', link: '', time: '' })
+                    setScrapedData(null)
+                  }}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
                 >
-                  {isDetecting ? '智能分类中...' : '智能分类'}
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
                 </button>
               </div>
             </div>
-            
-            <div className="p-8 max-h-[60vh] overflow-y-auto">
-              {!scrapedData ? (
-                <div className="text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-2xl flex items-center justify-center">
-                    <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                  </div>
-                  <p className="text-gray-500">网页快照正在加载...</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  {/* 左侧：拖拽区域 */}
-                  <div className="space-y-6">
-                    {/* 标题拖拽区域 */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-3">标题词条</h3>
-                      <div
-                        className="min-h-[120px] p-4 border-2 border-dashed border-gray-300 rounded-xl bg-gray-50/50 hover:bg-gray-100/50 transition-colors"
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                          e.preventDefault()
-                          const titleToken = e.dataTransfer.getData('text/plain')
-                          if (titleToken) {
-                            setDragSelectedTitle(titleToken)
-                          }
-                        }}
-                      >
-                        {dragSelectedTitle ? (
-                          <div className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                            <span className="text-blue-800 font-medium">{dragSelectedTitle}</span>
-                            <button
-                              onClick={() => setDragSelectedTitle('')}
-                              className="text-blue-600 hover:text-blue-800"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="text-center text-gray-500 py-8">
-                            <svg className="w-8 h-8 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
-                            </svg>
-                            <p>拖入标题词条或点击编辑</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
 
-                    {/* 文章内容拖拽区域 */}
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-lg font-semibold text-gray-900">文章内容词条</h3>
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => {
-                              const allArticles = segGroupsLocal.flatMap(group => group.articles)
-                              setDragSelectedArticles(allArticles)
-                            }}
-                            className="px-3 py-1 text-sm text-blue-600 hover:text-blue-800 transition-colors"
-                          >
-                            全选
-                          </button>
-                          <button
-                            onClick={() => setDragSelectedArticles([])}
-                            className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 transition-colors"
-                          >
-                            清空
-                          </button>
+            <div className="p-6 max-h-[calc(90vh-120px)] overflow-y-auto">
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">网页地址</label>
+                    <input
+                      type="url"
+                      value={webpageUrl}
+                      onChange={(e) => setWebpageUrl(e.target.value)}
+                      placeholder="https://example.com/news"
+                      className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      required
+                    />
+                  </div>
+                  <div className="flex space-x-3">
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">分段策略</label>
+                      <div className="relative">
+                        <select
+                          value={segMode}
+                          onChange={(e)=> setSegMode(e.target.value as any)}
+                          className="w-full px-4 py-3 pr-10 border border-gray-200 rounded-lg text-sm bg-white appearance-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none cursor-pointer"
+                          title="分段策略"
+                        >
+                          <option value="auto">自动 - 多策略融合，适合大多数网站</option>
+                          <option value="headings">标题归属 - 适合有清晰标题结构的页面</option>
+                          <option value="cluster">链接聚类 - 适合列表页面或链接密集的页面</option>
+                          <option value="pattern">路径聚合 - 适合URL结构规整的网站</option>
+                        </select>
+                        <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                          <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
                         </div>
                       </div>
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={detectCategories}
+                        disabled={!webpageUrl.trim() || isScraping}
+                        className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                      >
+                        {isScraping ? '检测中...' : '智能分类'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 网页快照 */}
+                <div className="space-y-4">
+                  <h4 className="text-sm font-medium text-gray-700">网页快照</h4>
+                  {!scrapedData && (
+                    <div className="border border-gray-200 rounded-lg p-8 text-center bg-gray-50">
+                      <div className="animate-spin w-6 h-6 border-2 border-purple-600 border-t-transparent rounded-full mx-auto mb-2"></div>
+                      <p className="text-sm text-gray-600">网页快照正在加载...</p>
+                    </div>
+                  )}
+                  {scrapedData && (
+                    <div
+                      className="border border-gray-200 rounded-lg overflow-hidden relative select-none"
+                      onWheel={(e)=>{
+                        e.preventDefault()
+                        const delta = e.deltaY > 0 ? -0.1 : 0.1
+                        setSnapScale(s=>Math.min(3, Math.max(0.2, Number((s+delta).toFixed(2)))))
+                      }}
+                      onMouseDown={(e)=>{
+                        setSnapDragging(true)
+                        setSnapDragStart({ x: e.clientX - snapOffset.x, y: e.clientY - snapOffset.y })
+                      }}
+                      onMouseMove={(e)=>{
+                        if(!snapDragging || !snapDragStart) return
+                        setSnapOffset({ x: e.clientX - snapDragStart.x, y: e.clientY - snapDragStart.y })
+                      }}
+                      onMouseUp={()=> setSnapDragging(false)}
+                      onMouseLeave={()=> setSnapDragging(false)}
+                      style={{ height: 400, cursor: snapDragging ? 'grabbing' : 'grab' }}
+                    >
                       <div
-                        className="min-h-[200px] p-4 border-2 border-dashed border-gray-300 rounded-xl bg-gray-50/50 hover:bg-gray-100/50 transition-colors"
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                          e.preventDefault()
-                          const articleData = e.dataTransfer.getData('application/json')
-                          if (articleData) {
-                            try {
-                              const article = JSON.parse(articleData)
-                              setDragSelectedArticles(prev => [...prev, article])
-                            } catch (error) {
-                              console.error('Failed to parse article data:', error)
-                            }
-                          }
+                        style={{
+                          transform: `translate(${snapOffset.x}px, ${snapOffset.y}px) scale(${snapScale})`,
+                          transformOrigin: '0 0'
                         }}
                       >
-                        {dragSelectedArticles.length > 0 ? (
-                          <div className="space-y-2">
-                            {dragSelectedArticles.map((article, index) => (
-                              <div key={index} className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded-lg">
-                                <span className="text-green-800 text-sm truncate flex-1">{article.title}</span>
-                                <button
-                                  onClick={() => setDragSelectedArticles(prev => prev.filter((_, i) => i !== index))}
-                                  className="text-green-600 hover:text-green-800 ml-2"
-                                >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
+                        <img src={scrapedData.screenshot} alt="网页快照" draggable={false} />
+                      </div>
+                      <div className="absolute bottom-2 right-2 flex items-center space-x-2 bg-white/80 border rounded px-2 py-1">
+                        <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.max(0.2, Number((s-0.1).toFixed(2))))}>-</button>
+                        <span className="text-xs w-10 text-center">{Math.round(snapScale*100)}%</span>
+                        <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.min(3, Number((s+0.1).toFixed(2))))}>+</button>
+                        <button className="px-2 text-xs" onClick={()=>{setSnapScale(1); setSnapOffset({x:0,y:0})}}>重置</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 新版：分段选择（标题词条 + 文章词条） */}
+                {showCategorySelection && segGroups.length > 0 && (
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-medium text-gray-700">拖拽选择：左侧上框拖入1个标题词条，下框拖入多篇文章词条</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* 左：上下两个拖入框 */}
+                      <div className="md:col-span-1 space-y-3">
+                        <div
+                          onDragOver={(e)=>e.preventDefault()}
+                          onDrop={(e)=>{
+                            e.preventDefault()
+                            const type = e.dataTransfer.getData('type')
+                            const payload = e.dataTransfer.getData('payload')
+                            if(type==='title'){
+                              setDragSelectedTitle(payload)
+                            }
+                          }}
+                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[64px] flex items-center justify-between bg-purple-50/40"
+                        >
+                          <div className="text-xs text-gray-700 font-medium">标题（仅1个）</div>
+                          <div className="text-xs text-gray-900 font-medium truncate max-w-[60%]">{dragSelectedTitle || '拖入标题词条'}</div>
+                        </div>
+                        <div
+                          onDragOver={(e)=>e.preventDefault()}
+                          onDrop={(e)=>{
+                            e.preventDefault()
+                            const type = e.dataTransfer.getData('type')
+                            const payload = e.dataTransfer.getData('payload')
+                            if(type==='article'){
+                              try{
+                                const art = JSON.parse(payload)
+                                setDragSelectedArticles(prev=>{
+                                  if(prev.find(x=>x.link===art.link)) return prev
+                                  return [...prev, art]
+                                })
+                              }catch{}
+                            } else if (type==='group') {
+                              try {
+                                const data = JSON.parse(payload)
+                                const gi = data.groupIndex
+                                const groupArts = segGroupsLocal[gi]?.articles || []
+                                setDragSelectedArticles(prev => {
+                                  const exist = new Set(prev.map(x=>x.link))
+                                  const merged = [...prev]
+                                  for (const a of groupArts) {
+                                    if (a.link && !exist.has(a.link)) merged.push(a)
+                                  }
+                                  return merged
+                                })
+                              } catch {}
+                            }
+                          }}
+                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[160px] bg-purple-50/30"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs text-gray-700 font-medium">文章内容（可多个）</div>
+                            <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
+                          </div>
+                          <div className="space-y-1 max-h-56 overflow-auto">
+                            {dragSelectedArticles.map((a,i)=> (
+                              <div key={i} className="text-xs bg-gray-50 p-2 rounded border flex items-center justify-between">
+                                <span className="truncate mr-2">{a.title || a.text || a.link}</span>
+                                <button className="text-[11px] text-red-500" title="移除" aria-label="移除" onClick={()=>setDragSelectedArticles(prev=>prev.filter((_,idx)=>idx!==i))}>-</button>
                               </div>
                             ))}
                           </div>
-                        ) : (
-                          <div className="text-center text-gray-500 py-8">
-                            <svg className="w-8 h-8 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
-                            </svg>
-                            <p>拖入文章内容词条</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* 创建RSS按钮 */}
-                    <button
-                      onClick={async () => {
-                        if (!dragSelectedTitle || dragSelectedArticles.length === 0) {
-                          alert('请选择标题词条和文章内容词条')
-                          return
-                        }
-
-                        setCreatingProgress(0)
-                        setIsCreating(true)
-
-                        // 模拟进度条
-                        const progressInterval = setInterval(() => {
-                          setCreatingProgress(prev => {
-                            if (prev >= 90) {
-                              clearInterval(progressInterval)
-                              return prev
-                            }
-                            return prev + 10
-                          })
-                        }, 200)
-
-                        try {
-                          const response = await fetch('/api/feeds/webpage-build-rss', {
-                            method: 'POST',
-                            headers: {
-                              'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({
-                              userId: 'user-1',
-                              url: webpageUrl,
-                              titleToken: dragSelectedTitle,
-                              articles: dragSelectedArticles
-                            }),
-                          })
-
-                          if (!response.ok) {
-                            throw new Error('创建失败')
-                          }
-
-                          setCreatingProgress(100)
-                          setTimeout(() => {
-                            setIsCreating(false)
-                            setCreatingProgress(0)
-                            setShowWebpageModal(false)
-                            setWebpageUrl('')
-                            setDragSelectedTitle('')
-                            setDragSelectedArticles([])
-                            loadFeeds()
-                            loadGroups()
-                          }, 500)
-                        } catch (error) {
-                          console.error('Error creating RSS:', error)
-                          alert('创建失败')
-                          setIsCreating(false)
-                          setCreatingProgress(0)
-                        }
-                      }}
-                      disabled={!dragSelectedTitle || dragSelectedArticles.length === 0 || isCreating}
-                      className="w-full px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-xl relative overflow-hidden"
-                    >
-                      {isCreating ? (
-                        <div className="flex items-center justify-center">
-                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
-                          创建中... {creatingProgress}%
                         </div>
-                      ) : (
-                        '根据选择创建RSS'
-                      )}
-                      {isCreating && (
-                        <div 
-                          className="absolute inset-0 bg-green-700 transition-all duration-300"
-                          style={{ width: `${creatingProgress}%` }}
-                        />
-                      )}
-                    </button>
-                  </div>
-
-                  {/* 右侧：识别结果 */}
-                  <div className="space-y-6">
-                    {/* 网页快照 */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-3">网页快照</h3>
-                      <div className="border border-gray-200 rounded-xl overflow-hidden">
-                        {scrapedData ? (
-                          <img 
-                            src={scrapedData} 
-                            alt="网页快照" 
-                            className="w-full h-auto max-h-64 object-cover"
-                          />
-                        ) : (
-                          <div className="h-64 bg-gray-100 flex items-center justify-center">
-                            <p className="text-gray-500">快照加载中...</p>
-                          </div>
-                        )}
                       </div>
-                    </div>
-
-                    {/* 识别结果 */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-3">识别结果</h3>
-                      <div className="space-y-4 max-h-96 overflow-y-auto">
-                        {segGroupsLocal.map((group, groupIndex) => (
-                          <div key={groupIndex} className="border border-gray-200 rounded-xl p-4">
-                            <div className="flex items-center justify-between mb-3">
-                              <h4 className="font-medium text-gray-900">{group.titleToken}</h4>
-                              <button
-                                onClick={() => {
-                                  const newExpanded = new Set(segExpandedSet)
-                                  if (newExpanded.has(groupIndex)) {
-                                    newExpanded.delete(groupIndex)
-                                  } else {
-                                    newExpanded.add(groupIndex)
-                                  }
-                                  setSegExpandedSet(newExpanded)
-                                }}
-                                className="text-blue-600 hover:text-blue-800"
-                              >
-                                {segExpandedSet.has(groupIndex) ? '收起' : '展开'}
-                              </button>
-                            </div>
-                            <div className="space-y-2">
-                              {group.articles.slice(0, segExpandedSet.has(groupIndex) ? group.articles.length : 3).map((article, articleIndex) => (
+                      {/* 右：统一候选池（标题 + 文章组） */}
+                      <div className="md:col-span-2 border border-gray-200 rounded-lg p-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-xs text-gray-700 font-medium mb-2">标题词条（可拖动到左上框）</div>
+                            <div className="space-y-2 max-h-64 overflow-auto">
+                              {segGroupsLocal.map((g, idx) => (
                                 <div
-                                  key={articleIndex}
-                                  className="flex items-center justify-between p-2 bg-gray-50 rounded-lg group"
+                                  key={idx}
                                   draggable
-                                  onDragStart={(e) => {
-                                    e.dataTransfer.setData('application/json', JSON.stringify(article))
+                                  onDragStart={(e)=>{
+                                    e.dataTransfer.setData('type','title')
+                                    e.dataTransfer.setData('payload', g.titleToken || g.heading || '未命名')
                                   }}
+                                  className="text-xs px-3 py-2 rounded border bg-purple-50 cursor-move"
+                                  title="拖拽到左上框作为标题"
                                 >
-                                  <span className="text-sm text-gray-700 truncate flex-1">{article.title}</span>
-                                  <button
-                                    onClick={() => {
-                                      setSegGroupsLocal(prev => prev.map((g, gi) => 
-                                        gi === groupIndex 
-                                          ? { ...g, articles: g.articles.filter((_, ai) => ai !== articleIndex) }
-                                          : g
-                                      ))
-                                    }}
-                                    className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-200 transition-all"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                    </svg>
-                                  </button>
+                                  {g.titleToken || g.heading}
                                 </div>
                               ))}
-                              {group.articles.length > 3 && !segExpandedSet.has(groupIndex) && (
-                                <p className="text-xs text-gray-500 text-center">
-                                  还有 {group.articles.length - 3} 个词条...
-                                </p>
-                              )}
                             </div>
                           </div>
-                        ))}
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="text-xs text-gray-700 font-medium">文章词条（分组展示，可拖拽整组到左下框）</div>
+                              <div className="space-x-2">
+                                <button className="text-[11px] text-gray-600" onClick={()=>{
+                                  const all = segGroupsLocal.flatMap(g=>g.articles||[])
+                                  setDragSelectedArticles(prev=>{
+                                    const exist = new Set(prev.map(x=>x.link))
+                                    const merged = [...prev]
+                                    for(const a of all){ if(a.link && !exist.has(a.link)) merged.push(a) }
+                                    return merged
+                                  })
+                                }}>全选</button>
+                                <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
+                              </div>
+                            </div>
+                            <div className="space-y-3 max-h-64 overflow-auto">
+                              {segGroupsLocal.map((g, gi) => {
+                                const expanded = segExpandedSet.has(gi)
+                                const articles = g.articles || []
+                                const preview = articles[0]
+                                return (
+                                  <div key={gi} className="border rounded-lg">
+                                    <div className="flex items-center justify-between px-2 py-2 bg-gray-50 border-b">
+                                      <div className="text-xs font-medium truncate">{g.titleToken || g.heading}</div>
+                                      <div className="flex items-center space-x-2">
+                                        <span className="text-[11px] text-gray-500">{articles.length} 篇</span>
+                                        <button className="text-[11px] text-purple-600" onClick={()=>{
+                                          setSegExpandedSet(prev=>{
+                                            const next = new Set(prev)
+                                            if(next.has(gi)) next.delete(gi); else next.add(gi)
+                                            return next
+                                          })
+                                        }}>{expanded?'收起':'展开'}</button>
+                                        <div
+                                          draggable
+                                          onDragStart={(e)=>{
+                                            e.dataTransfer.setData('type','group')
+                                            e.dataTransfer.setData('payload', JSON.stringify({ groupIndex: gi }))
+                                          }}
+                                          className="text-[11px] text-blue-600 cursor-move"
+                                          title="拖拽整组到左下框"
+                                        >拖整组</div>
+                                      </div>
+                                    </div>
+                                    <div className="p-2">
+                                      {preview && (
+                                        <div className="text-xs bg-white p-2 rounded border mb-1">{preview.title || preview.text || preview.link}</div>
+                                      )}
+                                      {expanded && (
+                                        <div className="space-y-1">
+                                          {articles.slice(1).map((a:any, ai:number) => (
+                                            <div
+                                              key={ai}
+                                              draggable
+                                              onDragStart={(e)=>{
+                                                e.dataTransfer.setData('type','article')
+                                                e.dataTransfer.setData('payload', JSON.stringify(a))
+                                              }}
+                                              className="text-xs bg-gray-50 p-2 rounded border cursor-move"
+                                              title="拖拽到左下框或其他组"
+                                            >
+                                              {a.title || a.text || a.link}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
+                )}
+
+                {/* 旧版：智能分类（保留以兼容） */}
+                {showCategorySelection && detectedCategories.length > 0 && (
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-medium text-gray-700">选择要创建RSS的分类</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {detectedCategories.map((category, index) => {
+                        const isExpanded = expandedCategoryNames.has(category.name)
+                        const total = category.articles ? category.articles.length : 0
+                        const list = category.articles ? (isExpanded ? category.articles : category.articles.slice(0, 3)) : []
+                        return (
+                          <div key={index} className="border border-gray-200 rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <label className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedCategories.has(category.name)}
+                                  onChange={(e) => {
+                                    const newSelected = new Set(selectedCategories)
+                                    if (e.target.checked) {
+                                      newSelected.add(category.name)
+                                    } else {
+                                      newSelected.delete(category.name)
+                                    }
+                                    setSelectedCategories(newSelected)
+                                  }}
+                                  className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                                />
+                                <span className="text-sm font-medium text-gray-900">{category.name}</span>
+                              </label>
+                              <div className="flex items-center space-x-3">
+                                <span className="text-xs text-gray-500">
+                                  {total} 篇文章
+                                </span>
+                                {total > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const next = new Set(expandedCategoryNames)
+                                      if (next.has(category.name)) next.delete(category.name)
+                                      else next.add(category.name)
+                                      setExpandedCategoryNames(next)
+                                    }}
+                                    className="text-xs text-purple-600 hover:text-purple-700"
+                                  >
+                                    {isExpanded ? '收起' : '展开'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {list && list.map((article: any, articleIndex: number) => (
+                              <div key={articleIndex} className="text-xs text-gray-700 bg-gray-50 p-2 rounded border mb-1">
+                                {article.title || article.text || article.link}
+                              </div>
+                            ))}
+                            {total > 3 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next = new Set(expandedCategoryNames)
+                                  if (next.has(category.name)) next.delete(category.name)
+                                  else next.add(category.name)
+                                  setExpandedCategoryNames(next)
+                                }}
+                                className="text-[11px] text-purple-600 mt-1 hover:text-purple-700"
+                              >
+                                {isExpanded ? '收起' : '展开可查看全部'}
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => {
+                          const allNames = detectedCategories.map(cat => cat.name)
+                          setSelectedCategories(new Set(allNames))
+                        }}
+                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                      >
+                        全选
+                      </button>
+                      <button
+                        onClick={() => setSelectedCategories(new Set())}
+                        className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                      >
+                        全不选
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 操作按钮 */}
+                <div className="flex space-x-3 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={() => {
+                      setShowWebpageModal(false)
+                      setShowCategorySelection(false)
+                      setWebpageUrl('')
+                      setSelectors({ title: '', content: '', link: '', time: '' })
+                      setScrapedData(null)
+                      setDetectedCategories([])
+                      setSelectedCategories(new Set())
+                    }}
+                    className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    取消
+                  </button>
+                  
+                  {showCategorySelection && segGroups.length>0 ? (
+                    <button
+                      onClick={async ()=>{
+                        if (!token) return
+                        if (!dragSelectedTitle) { alert('请先拖入一个标题词条'); return }
+                        const validArticles = dragSelectedArticles.filter(a=>a && a.link)
+                        if (validArticles.length===0) { alert('请拖入至少一篇带链接的文章词条'); return }
+                        try{
+                          setIsScraping(true)
+                          setIsCreating(true)
+                          setCreatingProgress(10)
+                          const timer = setInterval(()=>{
+                            setCreatingProgress(p=> (p<90? p+5 : p))
+                          }, 200)
+                          const resp = await fetch('/api/feeds/webpage-build-rss', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                            body: JSON.stringify({
+                              url: webpageUrl,
+                              titleToken: dragSelectedTitle,
+                              articles: validArticles.map((a:any)=>({ title: a.title || a.text || '无标题', link: a.link, pubDate: a.pubDate }))
+                            })
+                          })
+                          if(resp.ok){
+                            setCreatingProgress(100)
+                            const data = await resp.json()
+                            setFeeds(prev => [...prev, { id: data.id, title: data.title, url: webpageUrl, groupId: null, group: null }])
+                            setShowWebpageModal(false)
+                            setShowCategorySelection(false)
+                            setWebpageUrl('')
+                            setSegGroups([])
+                            setDragSelectedTitle(null)
+                            setDragSelectedArticles([])
+                            setScrapedData(null)
+                            alert('RSS 创建成功！')
+                          } else {
+                            const errText = await resp.text().catch(()=> '')
+                            let msg = '创建失败'
+                            try { const j = JSON.parse(errText); msg = j.message || msg } catch {}
+                            setErrorMessage(msg)
+                            setShowError(true)
+                          }
+                          setTimeout(()=>{ setIsCreating(false); setCreatingProgress(0) }, 400)
+                          
+                          
+                        } finally {
+                          setIsScraping(false)
+                        }
+                      }}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isCreating ? (
+                        <span className="w-full inline-flex items-center">
+                          <span className="mr-2">创建中</span>
+                          <span className="flex-1 h-2 bg-white/20 rounded overflow-hidden">
+                            <span className="h-2 bg-white block transition-all" style={{ width: `${creatingProgress}%` }}></span>
+                          </span>
+                        </span>
+                      ) : '根据选择创建RSS'}
+                    </button>
+                  ) : showCategorySelection ? (
+                    <button
+                      onClick={createCategoryRSS}
+                      disabled={selectedCategories.size === 0 || isScraping}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '创建中...' : `创建 ${selectedCategories.size} 个分类RSS`}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={createWebpageRSS}
+                      disabled={!webpageUrl.trim() || !selectors.title.trim() || isScraping}
+                      className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isScraping ? '创建中...' : '创建RSS订阅源'}
+                    </button>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-            
-            <div className="flex justify-end space-x-3 p-8 border-t border-gray-200/50">
+          </div>
+        </div>
+      )}
+
+      {/* 错误弹窗 */}
+      {showError && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-center mb-4">
+              <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center mr-3">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">导入失败</h3>
+            </div>
+            <p className="text-gray-600 mb-6">{errorMessage}</p>
+            <div className="flex space-x-3">
               <button
-                onClick={() => {
-                  setShowWebpageModal(false)
-                  setWebpageUrl('')
-                  setDragSelectedTitle('')
-                  setDragSelectedArticles([])
-                  setSegGroups([])
-                  setSegGroupsLocal([])
-                  setScrapedData('')
-                  setSuggestedTitle('')
-                  setShowCategorySelection(false)
-                }}
-                className="px-6 py-3 text-gray-600 hover:text-gray-800 transition-colors"
+                onClick={() => setShowError(false)}
+                className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
                 关闭
+              </button>
+              <button
+                onClick={() => {
+                  setShowError(false)
+                  setRssUrl('')
+                }}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                重试
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 创建分组模态框 */}
+      {/* 创建分组弹窗 */}
       {showGroupModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div 
-            className="bg-white/90 border border-white/30 shadow-2xl rounded-3xl max-w-md w-full p-8" 
-            style={{
-              backdropFilter: 'blur(25px)', 
-              WebkitBackdropFilter: 'blur(25px)',
-              background: 'linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.7) 100%)'
-            }}
-          >
-            <h2 className="text-2xl font-semibold text-gray-900 mb-6">创建分组</h2>
-            <div className="space-y-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-center mb-4">
+              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center mr-3">
+                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">创建新分组</h3>
+            </div>
+            <form onSubmit={createGroup} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">分组名称</label>
                 <input
                   type="text"
                   value={newGroupName}
                   onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder="输入分组名称"
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                  placeholder="例如：科技新闻、财经资讯"
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  required
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">分组颜色</label>
-                <div className="grid grid-cols-6 gap-2">
-                  {['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4'].map(color => (
-                    <button
-                      key={color}
-                      onClick={() => setNewGroupColor(color)}
-                      className={`w-8 h-8 rounded-full border-2 ${
-                        newGroupColor === color ? 'border-gray-900' : 'border-gray-300'
-                      }`}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
-                </div>
+              <div className="flex space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGroupModal(false)
+                    setNewGroupName('')
+                  }}
+                  className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  创建分组
+                </button>
               </div>
-            </div>
-            <div className="flex justify-end space-x-3 mt-8">
-              <button
-                onClick={() => setShowGroupModal(false)}
-                className="px-6 py-3 text-gray-600 hover:text-gray-800 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={createGroup}
-                disabled={!newGroupName.trim()}
-                className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg hover:shadow-xl"
-              >
-                创建
-              </button>
-            </div>
+            </form>
           </div>
         </div>
       )}
     </div>
   )
 }
-
-export default App

@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import Parser from 'rss-parser';
 import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
+import iconv from 'iconv-lite';
 import { z } from 'zod';
 
 const prisma = new PrismaClient();
@@ -854,70 +855,60 @@ export async function feedRoutes(app: FastifyInstance) {
 
     const { url } = parsed.data;
     
+    let browser;
     try {
-      // 增强稳定性：重试 2 次，不同等待策略，整体超时更短
-      const maxAttempts = 2;
-      let lastError: any = null;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const browser = await puppeteer.launch({
-            headless: true,
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-gpu',
-              '--window-size=1920,1080'
-            ]
-          });
+      // 优化为快速预览模式
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-images', // 禁用图片加载以加快速度
+          '--disable-javascript', // 禁用JS以加快速度
+          '--disable-web-security',
+          '--disable-features=VizDisplayCompositor',
+          '--window-size=1200,800' // 减小窗口尺寸
+        ]
+      });
 
-          const page = await browser.newPage();
-          await page.setViewport({ width: 1920, height: 1080 });
-          await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      const page = await browser.newPage();
+      
+      // 设置更短的超时时间
+      page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(5000);
+      
+      await page.setViewport({ width: 1200, height: 800 });
+      await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-          const gotoPromise = page.goto(url, {
-            // 第一次快速：domcontentloaded；若失败再用 networkidle2
-            waitUntil: attempt === 1 ? 'domcontentloaded' : 'networkidle2',
-            timeout: 15000
-          });
-          // 限制整体导航时间，避免长时间卡住
-          await Promise.race([
-            gotoPromise,
-            new Promise((_, rej) => setTimeout(() => rej(new Error('Navigation overall timeout')), 16000))
-          ]);
+      // 快速导航，只等待DOM加载完成
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 5000 // 进一步减少超时时间
+      });
 
-          // 为避免 evaluate 中的打包辅助符号报错，改为简单等待+一次性滚动
-          try {
-            await page.waitForTimeout(attempt === 1 ? 400 : 900);
-            await page.evaluate(() => {
-              const max = 2000;
-              const step = 600;
-              for (let y = 0; y <= max; y += step) {
-                window.scrollTo(0, y);
-              }
-              window.scrollTo(0, 0);
-            });
-            await page.waitForTimeout(400);
-          } catch {}
+      // 简单等待，不进行复杂滚动
+      await page.waitForTimeout(200);
 
-          const screenshot = await page.screenshot({
-            fullPage: true,
-            type: 'jpeg',
-            quality: 85
-          });
-          await browser.close();
+      // 只截取可见区域，不截取全页面
+      const screenshot = await page.screenshot({
+        type: 'jpeg',
+        quality: 60, // 进一步降低质量
+        clip: { x: 0, y: 0, width: 1200, height: 800 } // 只截取可见区域
+      });
+      
+      await browser.close();
 
-          return {
-            screenshot: `data:image/jpeg;base64,${screenshot.toString('base64')}`,
-            url
-          };
-        } catch (e) {
-          lastError = e;
-        }
-      }
-      throw lastError;
+      return {
+        screenshot: `data:image/jpeg;base64,${screenshot.toString('base64')}`,
+        url
+      };
     } catch (error) {
       console.error('网页快照失败:', error);
+      if (browser) {
+        try { await browser.close(); } catch {}
+      }
       // 返回SVG占位符
       const svgPlaceholder = `<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
         <rect width="100%" height="100%" fill="#f3f4f6"/>
@@ -1016,11 +1007,11 @@ export async function feedRoutes(app: FastifyInstance) {
 
   // 新增：网页词条分段（供前端“拖入”使用）
   app.post('/webpage-segmentation', async (req, reply) => {
-    const schema = z.object({ url: z.string().url() });
+    const schema = z.object({ url: z.string().url(), mode: z.enum(['auto','headings','cluster','pattern']).optional() });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
 
-    const { url } = parsed.data;
+    const { url, mode = 'auto' } = parsed.data as any;
     try {
       const response = await fetch(url, {
         headers: {
@@ -1029,9 +1020,122 @@ export async function feedRoutes(app: FastifyInstance) {
         timeout: 25000
       });
       if (!response.ok) return reply.code(400).send({ error: 'Failed to fetch webpage' });
-      const html = await response.text();
-      const groups = segmentByHeadings(url, html);
-      // 将第一个链接文本作为该组“预览文案”
+      // 编码处理：优先依据 header/meta 识别 GBK/GB2312
+      const ct = response.headers.get('content-type') || '';
+      const buf = Buffer.from(await response.arrayBuffer());
+      let charset = 'utf-8';
+      if (/charset=([^;]+)/i.test(ct)) {
+        const m = ct.match(/charset=([^;]+)/i);
+        if (m) charset = m[1].toLowerCase();
+      } else {
+        // 尝试从前 1KB 的 meta 标签里探测
+        const head = buf.slice(0, 2048).toString('ascii');
+        const m2 = head.match(/charset\s*=\s*([a-zA-Z0-9-]+)/i);
+        if (m2) charset = m2[1].toLowerCase();
+      }
+      if (charset.includes('gbk') || charset.includes('gb2312')) {
+        // @ts-ignore
+        if (!iconv.encodingExists('gbk')) charset = 'utf-8';
+      }
+      const html = (charset.includes('gbk') || charset.includes('gb2312'))
+        ? iconv.decode(buf, 'gbk')
+        : buf.toString('utf-8');
+      let groups: Array<{ heading: string; articles: any[] }> = [];
+      // 面包屑/当前位置 作为建议标题
+      const $meta = cheerio.load(html);
+      function extractSuggestedTitle(): string | null {
+        try {
+          // 1. 特例：包含"当前位置"文字 - 更精确的匹配
+          const textSel = $meta('*').filter((_, e) => /当前位置/.test($meta(e).text())).first();
+          if (textSel && textSel.length) {
+            // 直接获取HTML内容而不是text()，这样可以保留链接结构
+            const html = $meta(textSel).html() || '';
+            // 匹配 "当前位置：<a>首页</a>&nbsp;&gt;&nbsp;<a>政务公开</a>&nbsp;&gt;&nbsp;<a>通知公告</a>" 格式
+            const match = html.match(/当前位置[:：]\s*(.+)/);
+            if (match) {
+              const breadcrumbHtml = match[1];
+              // 提取所有链接文本
+              const linkTexts: string[] = [];
+              const $breadcrumb = cheerio.load(breadcrumbHtml);
+              $breadcrumb('a').each((_, a) => {
+                const text = $breadcrumb(a).text().trim();
+                if (text) linkTexts.push(text);
+              });
+              // 如果没有链接，尝试从纯文本中提取
+              if (linkTexts.length === 0) {
+                const cleanText = breadcrumbHtml
+                  .replace(/<[^>]+>/g, '') // 移除HTML标签
+                  .replace(/&nbsp;/g, ' ')
+                  .replace(/&gt;/g, '>')
+                  .replace(/&lt;/g, '<')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                const tokens = cleanText.split(/[>＞]/).map(s=>s.trim()).filter(Boolean);
+                const cleaned = tokens.filter(p => !/^首页$/.test(p) && p.length <= 20);
+                if (cleaned.length) return cleaned[cleaned.length - 1];
+              } else {
+                // 使用链接文本，过滤掉"首页"
+                const cleaned = linkTexts.filter(p => !/^首页$/.test(p) && p.length <= 20);
+                if (cleaned.length) return cleaned[cleaned.length - 1];
+              }
+            }
+          }
+          
+          // 2. 常见面包屑容器
+          const candidates = [
+            '.breadcrumb', 'nav.breadcrumb', '.crumb', '.breadcrumbs', '.position', '.sitepath', '.path', '.m-crumb', '.location', '.loc'
+          ];
+          for (const sel of candidates) {
+            const el = $meta(sel).first();
+            if (el && el.length) {
+              const parts: string[] = [];
+              el.find('a, span, li').each((_, x) => {
+                const t = $meta(x).text().trim();
+                if (t) parts.push(t);
+              });
+              const cleaned = parts.filter(p => !/^首页$/.test(p) && p.length <= 20);
+              if (cleaned.length) return cleaned[cleaned.length - 1];
+            }
+          }
+          
+          // 3. 查找包含 ">" 或 "＞" 的文本（面包屑特征）
+          $meta('*').each((_, el) => {
+            const text = $meta(el).text().trim();
+            if (text.includes('>') || text.includes('＞')) {
+              const tokens = text.split(/[>＞]/).map(s=>s.trim()).filter(Boolean);
+              const cleaned = tokens.filter(p => !/^首页$/.test(p) && p.length <= 20);
+              if (cleaned.length >= 2) return cleaned[cleaned.length - 1];
+            }
+          });
+          
+        } catch {}
+        
+        try {
+          const title = $meta('title').first().text().trim();
+          if (title) return title.slice(0, 30);
+        } catch {}
+        return null;
+      }
+      const suggestedTitle = extractSuggestedTitle();
+      const runHeadings = () => segmentByHeadings(url, html);
+      const runCluster = () => segmentByClusters(url, html);
+      const runPattern = () => segmentByPathPatterns(url, html);
+
+      if (mode === 'headings') groups = runHeadings();
+      else if (mode === 'cluster') groups = runCluster();
+      else if (mode === 'pattern') groups = runPattern();
+      else {
+        // auto：多策略投票/兜底
+        const a = runHeadings();
+        const b = runCluster();
+        const c = runPattern();
+        groups = [...a, ...b, ...c]
+          .sort((x,y)=> (y.articles?.length||0) - (x.articles?.length||0))
+          .filter((g,idx,self)=> self.findIndex(s=>s.heading===g.heading)===idx)
+          .slice(0,12);
+        if (!groups.length) groups = b.length ? b : c;
+      }
+      // 将第一个链接文本作为该组"预览文案"
       const payload = groups.map(g => ({
         titleToken: g.heading,
         contentTokensPreview: g.articles[0]?.title || '',
