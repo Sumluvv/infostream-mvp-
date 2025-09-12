@@ -47,9 +47,21 @@ export default function App() {
   // 拖拽版：统一词条池（右侧）+ 左侧上下框
   const [dragSelectedTitle, setDragSelectedTitle] = useState<string | null>(null) // 存 titleToken 文本
   const [dragSelectedArticles, setDragSelectedArticles] = useState<any[]>([])
+  // 分段策略模式
+  const [segMode, setSegMode] = useState<string>('auto')
+  // 建议标题
+  const [suggestedTitle, setSuggestedTitle] = useState<string>('')
+  // 空结果提示
+  const [showEmptyResult, setShowEmptyResult] = useState(false)
   // 创建进度条
   const [creatingProgress, setCreatingProgress] = useState(0)
   const [isCreating, setIsCreating] = useState(false)
+  // 标题框状态管理
+  const [titleInputValue, setTitleInputValue] = useState<string>('')
+  const [isTitleInputFocused, setIsTitleInputFocused] = useState(false)
+  const [hasTitleBeenEdited, setHasTitleBeenEdited] = useState(false)
+  // 网页快照加载状态
+  const [isSnapshotLoading, setIsSnapshotLoading] = useState(false)
 
   useEffect(() => {
     console.log('App mounted')
@@ -422,17 +434,44 @@ export default function App() {
     }
   }
 
+  // 生成默认标题格式
+  const generateDefaultTitle = (url: string, title?: string) => {
+    try {
+      const urlObj = new URL(url)
+      const domain = urlObj.hostname
+      if (title) {
+        return `${domain}/${title}`
+      }
+      return `${domain}/所选标题`
+    } catch {
+      return '网站地址/所选标题'
+    }
+  }
+
   // 网页转RSS相关函数
-  const detectCategories = async () => {
+  const detectCategories = async (mode?: string) => {
     if (!webpageUrl.trim()) return
     
     setIsScraping(true)
+    // 清空之前的状态
+    setSegGroups([])
+    setSegGroupsLocal([])
+    setScrapedData(null)
+    setSuggestedTitle('')
+    setShowCategorySelection(false)
+    // 重置标题框状态
+    setTitleInputValue('')
+    setHasTitleBeenEdited(false)
+    setIsTitleInputFocused(false)
+    // 重置快照加载状态
+    setIsSnapshotLoading(false)
+    
     try {
       // 1) 先拿分段结果，立即展示
       const segResp = await fetch('/api/feeds/webpage-segmentation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ url: webpageUrl })
+        body: JSON.stringify({ url: webpageUrl, mode: mode || segMode })
       })
       if (segResp.ok) {
         const segData = await segResp.json()
@@ -442,11 +481,21 @@ export default function App() {
         setSegExpandedSet(new Set())
         setSelectedSegGroupIdx(null)
         setSelectedArticleIdxSet(new Set())
+        setSuggestedTitle(segData.suggestedTitle || '')
         setShowCategorySelection(true)
-      }
-
-      // 2) 若分组为空，回退到“智能分类”接口产出分组
-      if ((segGroups.length === 0)) {
+        
+        // 设置默认标题格式
+        const defaultTitle = generateDefaultTitle(webpageUrl, segData.suggestedTitle)
+        setTitleInputValue(defaultTitle)
+        
+        // 如果没有结果，显示空结果提示
+        if (groups.length === 0) {
+          setShowEmptyResult(true)
+        } else {
+          setShowEmptyResult(false)
+        }
+      } else {
+        // 分段失败，尝试回退到"智能分类"接口
         try {
           const catResp = await fetch('/api/feeds/webpage-categories', {
             method: 'POST',
@@ -468,6 +517,7 @@ export default function App() {
       }
 
       // 3) 再异步拉快照，不阻塞分组显示
+      setIsSnapshotLoading(true)
       fetch('/api/feeds/webpage-snapshot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -477,7 +527,9 @@ export default function App() {
           const d = await r.json()
           setScrapedData(d)
         }
-      }).catch(() => {})
+      }).catch(() => {}).finally(() => {
+        setIsSnapshotLoading(false)
+      })
     } catch (error) {
       console.error('Category detection error:', error)
       setErrorMessage('网络错误，请检查网络连接')
@@ -1403,11 +1455,32 @@ export default function App() {
                       required
                       readOnly
                     />
+                    {/* 策略选择器 */}
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm font-medium text-gray-700">策略模式:</label>
+                      <select
+                        value={segMode}
+                        onChange={(e) => setSegMode(e.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent appearance-none bg-white pr-8"
+                        style={{
+                          backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e")`,
+                          backgroundPosition: 'right 0.5rem center',
+                          backgroundRepeat: 'no-repeat',
+                          backgroundSize: '1.5em 1.5em'
+                        }}
+                      >
+                        <option value="auto">自动（推荐）</option>
+                        <option value="headings">标题归属 - 适合有清晰标题结构的页面</option>
+                        <option value="cluster">链接聚类 - 适合列表页面或链接密集的页面</option>
+                        <option value="pattern">路径聚合 - 适合URL结构规整的网站</option>
+                      </select>
+                    </div>
+                    
                     <button
                       type="button"
-                      onClick={detectCategories}
+                      onClick={() => detectCategories()}
                       disabled={!webpageUrl.trim() || isScraping}
-                      className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                     >
                       {isScraping ? '检测中...' : '智能分类'}
                     </button>
@@ -1415,7 +1488,7 @@ export default function App() {
                 </div>
 
                 {/* 网页快照 */}
-                {scrapedData && (
+                {(scrapedData || isSnapshotLoading) && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium text-gray-700">网页快照</h4>
                     <div
@@ -1437,25 +1510,69 @@ export default function App() {
                       onMouseLeave={()=> setSnapDragging(false)}
                       style={{ height: 400, cursor: snapDragging ? 'grabbing' : 'grab' }}
                     >
-                      <div
-                        style={{
-                          transform: `translate(${snapOffset.x}px, ${snapOffset.y}px) scale(${snapScale})`,
-                          transformOrigin: '0 0'
-                        }}
-                      >
-                        <img src={scrapedData.screenshot} alt="网页快照" draggable={false} />
-                      </div>
-                      <div className="absolute bottom-2 right-2 flex items-center space-x-2 bg-white/80 border rounded px-2 py-1">
-                        <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.max(0.2, Number((s-0.1).toFixed(2))))}>-</button>
-                        <span className="text-xs w-10 text-center">{Math.round(snapScale*100)}%</span>
-                        <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.min(3, Number((s+0.1).toFixed(2))))}>+</button>
-                        <button className="px-2 text-xs" onClick={()=>{setSnapScale(1); setSnapOffset({x:0,y:0})}}>重置</button>
-                      </div>
+                      {isSnapshotLoading ? (
+                        <div className="flex items-center justify-center h-full bg-gray-50">
+                          <div className="text-center">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-3"></div>
+                            <p className="text-sm text-gray-600">网页快照正在加载...</p>
+                          </div>
+                        </div>
+                      ) : scrapedData ? (
+                        <>
+                          <div
+                            style={{
+                              transform: `translate(${snapOffset.x}px, ${snapOffset.y}px) scale(${snapScale})`,
+                              transformOrigin: '0 0'
+                            }}
+                          >
+                            <img src={scrapedData.screenshot} alt="网页快照" draggable={false} />
+                          </div>
+                          <div className="absolute bottom-2 right-2 flex items-center space-x-2 bg-white/80 border rounded px-2 py-1">
+                            <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.max(0.2, Number((s-0.1).toFixed(2))))}>-</button>
+                            <span className="text-xs w-10 text-center">{Math.round(snapScale*100)}%</span>
+                            <button className="px-2 text-sm" onClick={()=>setSnapScale(s=>Math.min(3, Number((s+0.1).toFixed(2))))}>+</button>
+                            <button className="px-2 text-xs" onClick={()=>{setSnapScale(1); setSnapOffset({x:0,y:0})}}>重置</button>
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                   </div>
                 )}
 
                 {/* 新版：分段选择（标题词条 + 文章词条） */}
+                {/* 空结果提示 */}
+                {showEmptyResult && segGroups.length === 0 && (
+                  <div className="text-center py-8">
+                    <div className="text-gray-500 mb-4">
+                      <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 12h6m-6-4h6m2 5.291A7.962 7.962 0 0112 15c-2.34 0-4.29-1.009-5.824-2.709M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">未找到可分段的内容</h3>
+                    <p className="text-gray-600 mb-4">当前策略无法识别此页面的文章结构，请尝试其他策略模式</p>
+                    <div className="flex gap-2 justify-center">
+                      <button
+                        onClick={() => detectCategories('headings')}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                      >
+                        尝试标题归属
+                      </button>
+                      <button
+                        onClick={() => detectCategories('cluster')}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                      >
+                        尝试链接聚类
+                      </button>
+                      <button
+                        onClick={() => detectCategories('pattern')}
+                        className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                      >
+                        尝试路径聚合
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {showCategorySelection && segGroups.length > 0 && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium text-gray-700">拖拽选择：左侧上框拖入1个标题词条，下框拖入多篇文章词条</h4>
@@ -1470,12 +1587,36 @@ export default function App() {
                             const payload = e.dataTransfer.getData('payload')
                             if(type==='title'){
                               setDragSelectedTitle(payload)
+                              // 更新输入框值为网站地址/拖入的标题
+                              const newTitle = generateDefaultTitle(webpageUrl, payload)
+                              setTitleInputValue(newTitle)
+                              setHasTitleBeenEdited(true)
                             }
                           }}
-                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[64px] flex items-center justify-between bg-purple-50/40"
+                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[64px] bg-purple-50/40"
                         >
-                          <div className="text-xs text-gray-700 font-medium">标题（仅1个）</div>
-                          <div className="text-xs text-gray-900 font-medium truncate max-w-[60%]">{dragSelectedTitle || '拖入标题词条'}</div>
+                          <div className="text-xs text-gray-700 font-medium mb-2">标题词条（拖入或编辑）</div>
+                          <input
+                            type="text"
+                            value={titleInputValue}
+                            onChange={(e) => {
+                              setTitleInputValue(e.target.value)
+                              setHasTitleBeenEdited(true)
+                            }}
+                            onFocus={() => {
+                              setIsTitleInputFocused(true)
+                              if (!hasTitleBeenEdited) {
+                                // 首次点击时，显示网站地址/格式
+                                const baseTitle = generateDefaultTitle(webpageUrl)
+                                setTitleInputValue(baseTitle)
+                              }
+                            }}
+                            onBlur={() => setIsTitleInputFocused(false)}
+                            placeholder={hasTitleBeenEdited ? "" : generateDefaultTitle(webpageUrl)}
+                            className={`w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent ${
+                              !hasTitleBeenEdited && !isTitleInputFocused ? 'text-gray-400' : 'text-gray-900'
+                            }`}
+                          />
                         </div>
                         <div
                           onDragOver={(e)=>e.preventDefault()}
@@ -1547,8 +1688,8 @@ export default function App() {
                           </div>
                           <div>
                             <div className="flex items-center justify-between mb-2">
-                              <div className="text-xs text-gray-700 font-medium">文章词条（分组展示，可拖拽整组到左下框）</div>
-                              <div className="space-x-2">
+                              <div className="text-xs text-gray-700 font-medium">文章词条（可拖拽整组到左下框）</div>
+                              <div className="flex items-center space-x-2">
                                 <button className="text-[11px] text-gray-600" onClick={()=>{
                                   const all = segGroupsLocal.flatMap(g=>g.articles||[])
                                   setDragSelectedArticles(prev=>{
@@ -1737,7 +1878,7 @@ export default function App() {
                     <button
                       onClick={async ()=>{
                         if (!token) return
-                        if (!dragSelectedTitle) { alert('请先拖入一个标题词条'); return }
+                        if (!titleInputValue.trim()) { alert('请输入标题'); return }
                         const validArticles = dragSelectedArticles.filter(a=>a && a.link)
                         if (validArticles.length===0) { alert('请拖入至少一篇带链接的文章词条'); return }
                         try{
@@ -1752,7 +1893,7 @@ export default function App() {
                             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                             body: JSON.stringify({
                               url: webpageUrl,
-                              titleToken: dragSelectedTitle,
+                              titleToken: titleInputValue,
                               articles: validArticles.map((a:any)=>({ title: a.title || a.text || '无标题', link: a.link, pubDate: a.pubDate }))
                             })
                           })
@@ -1767,6 +1908,9 @@ export default function App() {
                             setDragSelectedTitle(null)
                             setDragSelectedArticles([])
                             setScrapedData(null)
+                            setTitleInputValue('')
+                            setHasTitleBeenEdited(false)
+                            setIsTitleInputFocused(false)
                             alert('RSS 创建成功！')
                           } else {
                             const errText = await resp.text().catch(()=> '')

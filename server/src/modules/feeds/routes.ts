@@ -4,6 +4,7 @@ import Parser from 'rss-parser';
 import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
 import { z } from 'zod';
+import iconv from 'iconv-lite';
 
 const prisma = new PrismaClient();
 const parser = new Parser();
@@ -21,13 +22,13 @@ async function updateRSSFeeds() {
         // 仅在明确为 RSS/XML 时才解析，避免将普通网页当作 RSS
         let canParse = false;
         try {
-          const headResp = await fetch(feed.url, { method: 'HEAD', timeout: 10000 });
+          const headResp = await fetch(feed.url, { method: 'HEAD' });
           const ct = headResp.headers.get('content-type') || '';
           if (/xml|rss|atom/i.test(ct)) canParse = true;
         } catch {
           // 某些站点不支持 HEAD，再用 GET 探测前 1KB
           try {
-            const getResp = await fetch(feed.url, { method: 'GET', timeout: 10000 });
+            const getResp = await fetch(feed.url, { method: 'GET' });
             const ct = getResp.headers.get('content-type') || '';
             if (/xml|rss|atom/i.test(ct)) canParse = true;
           } catch {}
@@ -76,26 +77,340 @@ async function updateRSSFeeds() {
 }
 
 // 基于标题分组的通用分段函数
+// 通用工具函数
+function isSameHost(href: string, baseUrl: string) {
+  try {
+    const baseHost = new URL(baseUrl).hostname;
+    const u = new URL(href, baseUrl);
+    return u.hostname === baseHost;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeUrl(href: string, baseUrl: string) {
+  try {
+    return new URL(href, baseUrl).href;
+  } catch {
+    return '';
+  }
+}
+
+function extractSuggestedTitle(html: string, url: string): string {
+  const $ = cheerio.load(html);
+  
+  // 尝试从面包屑导航提取 - 增强版
+  const breadcrumbSelectors = [
+    // 标准面包屑选择器
+    '.breadcrumb a:last-child',
+    '.breadcrumb a:last',
+    '[class*="breadcrumb"] a:last-child',
+    '[class*="当前位置"] a:last-child',
+    '[class*="当前位置"] span:last-child',
+    // 政府网站常见选择器
+    '[class*="位置"] a:last-child',
+    '[class*="导航"] a:last-child',
+    '[class*="路径"] a:last-child',
+    // 通用面包屑模式
+    'nav a:last-child',
+    'ol a:last-child',
+    'ul[class*="nav"] a:last-child'
+  ];
+  
+  for (const selector of breadcrumbSelectors) {
+    const element = $(selector);
+    if (element.length) {
+      const text = element.text().trim();
+      if (text && text.length > 2 && text.length < 50) {
+        return text;
+      }
+    }
+  }
+  
+  // 尝试从文本中提取面包屑模式
+  const breadcrumbTextPatterns = [
+    /当前位置[：:]\s*[^>]*>\s*([^>]+)$/,
+    /首页\s*>\s*[^>]*>\s*([^>]+)$/,
+    /首页\s*>\s*([^>]+)$/,
+    /([^>]+)\s*>\s*([^>]+)$/
+  ];
+  
+  const bodyText = $('body').text();
+  for (const pattern of breadcrumbTextPatterns) {
+    const match = bodyText.match(pattern);
+    if (match) {
+      const title = match[1] || match[2];
+      if (title && title.trim().length > 2 && title.trim().length < 50) {
+        return title.trim();
+      }
+    }
+  }
+  
+  // 尝试从页面标题提取
+  const title = $('title').text().trim();
+  if (title) {
+    // 移除常见的网站名称后缀
+    const cleanTitle = title.replace(/\s*[-|]\s*.*$/, '').trim();
+    if (cleanTitle.length > 2 && cleanTitle.length < 50) {
+      return cleanTitle;
+    }
+  }
+  
+  // 尝试从H1标题提取
+  const h1 = $('h1').first().text().trim();
+  if (h1 && h1.length > 2 && h1.length < 50) {
+    return h1;
+  }
+  
+  return new URL(url).hostname;
+}
+
+// 链接聚类分段策略
+function segmentByClusters(url: string, html: string) {
+  const $ = cheerio.load(html);
+  const hostname = new URL(url).hostname;
+  
+  // 收集所有链接
+  const links: Array<{
+    text: string;
+    href: string;
+    fullUrl: string;
+    container: string;
+    xpath: string;
+  }> = [];
+  
+  $('a[href]').each((_, a) => {
+    const text = $(a).text().trim();
+    const href = $(a).attr('href') || '';
+    if (!text || !href || text.length < 3) return;
+    
+    const fullUrl = normalizeUrl(href, url);
+    if (!isSameHost(fullUrl, url)) return;
+    
+    // 计算容器XPath
+    const container = $(a).closest('div, section, article, ul, ol').attr('class') || '';
+    const xpath = getElementXPath(a);
+    
+    links.push({ text, href, fullUrl, container, xpath });
+  });
+  
+  // 按容器和路径前缀聚类
+  const clusters = new Map<string, typeof links>();
+  
+  links.forEach(link => {
+    const pathPrefix = new URL(link.fullUrl).pathname.split('/').slice(0, 3).join('/');
+    const clusterKey = `${link.container}-${pathPrefix}`;
+    
+    if (!clusters.has(clusterKey)) {
+      clusters.set(clusterKey, []);
+    }
+    clusters.get(clusterKey)!.push(link);
+  });
+  
+  // 计算每个聚类的得分
+  const scoredClusters = Array.from(clusters.entries()).map(([key, clusterLinks]) => {
+    const linkDensity = clusterLinks.length / Math.max(links.length, 1);
+    const uniqueHost = 1; // 同域已保证
+    const dateHit = clusterLinks.some(link => /20\d{2}[\-\.年]/.test(link.text)) ? 1 : 0;
+    const titleDensity = clusterLinks.filter(link => 
+      link.text.length > 10 && link.text.length < 100
+    ).length / Math.max(clusterLinks.length, 1);
+    
+    const score = linkDensity * 0.3 + uniqueHost * 0.2 + dateHit * 0.3 + titleDensity * 0.2;
+    
+    return {
+      key,
+      links: clusterLinks,
+      score,
+      titleToken: extractClusterTitle(clusterLinks, $)
+    };
+  });
+  
+  // 选择得分最高的聚类
+  const topClusters = scoredClusters
+    .filter(c => c.score > 0.1 && c.links.length >= 3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+  
+  return topClusters.map(cluster => ({
+    titleToken: cluster.titleToken,
+    articles: cluster.links.map(link => ({
+      title: link.text,
+      link: link.fullUrl,
+      pubDate: new Date().toISOString()
+    }))
+  }));
+}
+
+// 路径模式聚合分段策略
+function segmentByPathPatterns(url: string, html: string) {
+  const $ = cheerio.load(html);
+  const hostname = new URL(url).hostname;
+  
+  // 收集所有链接并按路径模式分组
+  const pathPatterns = new Map<string, Array<{
+    text: string;
+    href: string;
+    fullUrl: string;
+  }>>();
+  
+  $('a[href]').each((_, a) => {
+    const text = $(a).text().trim();
+    const href = $(a).attr('href') || '';
+    if (!text || !href || text.length < 3) return;
+    
+    const fullUrl = normalizeUrl(href, url);
+    if (!isSameHost(fullUrl, url)) return;
+    
+    // 提取路径模式
+    const urlObj = new URL(fullUrl);
+    const pathParts = urlObj.pathname.split('/').filter(p => p);
+    
+    if (pathParts.length >= 2) {
+      const pattern = `/${pathParts[0]}/${pathParts[1]}`;
+      if (!pathPatterns.has(pattern)) {
+        pathPatterns.set(pattern, []);
+      }
+      pathPatterns.get(pattern)!.push({ text, href, fullUrl });
+    }
+  });
+  
+  // 过滤和排序模式
+  const filteredPatterns = Array.from(pathPatterns.entries())
+    .filter(([pattern, links]) => {
+      // 过滤导航和页脚链接
+      const navKeywords = /(nav|menu|footer|header|sidebar|breadcrumb|pagination)/i;
+      const hasNavClass = links.some(link => {
+        const element = $(`a[href="${link.href}"]`);
+        return navKeywords.test(element.closest('[class]').attr('class') || '');
+      });
+      
+      return !hasNavClass && links.length >= 3;
+    })
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 8);
+  
+  return filteredPatterns.map(([pattern, links]) => ({
+    titleToken: convertPathToTitle(pattern),
+    articles: links.slice(0, 50).map(link => ({
+      title: link.text,
+      link: link.fullUrl,
+      pubDate: new Date().toISOString()
+    }))
+  }));
+}
+
+// 合并相似组
+function mergeSimilarGroups(allGroups: any[]) {
+  const merged = new Map<string, any>();
+  
+  allGroups.forEach(group => {
+    const key = group.titleToken || group.heading;
+    if (!merged.has(key)) {
+      merged.set(key, {
+        titleToken: key,
+        articles: []
+      });
+    }
+    
+    const existing = merged.get(key);
+    const existingLinks = new Set(existing.articles.map((a: any) => a.link));
+    
+    group.articles.forEach((article: any) => {
+      if (!existingLinks.has(article.link)) {
+        existing.articles.push(article);
+        existingLinks.add(article.link);
+      }
+    });
+  });
+  
+  return Array.from(merged.values())
+    .filter(g => g.articles.length >= 2)
+    .sort((a, b) => b.articles.length - a.articles.length);
+}
+
+// 辅助函数
+function getElementXPath(element: any): string {
+  // 简化的XPath生成
+  const tagName = element.tagName?.toLowerCase() || 'unknown';
+  const className = element.className || '';
+  return `${tagName}${className ? '.' + className.split(' ')[0] : ''}`;
+}
+
+function extractClusterTitle(links: any[], $: cheerio.CheerioAPI): string {
+  // 尝试从容器标题或第一个链接文本推断标题
+  if (links.length === 0) return '未命名分组';
+  
+  const firstLink = links[0];
+  const element = $(`a[href="${firstLink.href}"]`);
+  const container = element.closest('div, section, article, h1, h2, h3');
+  
+  const containerTitle = container.find('h1, h2, h3').first().text().trim();
+  if (containerTitle && containerTitle.length > 2 && containerTitle.length < 50) {
+    return containerTitle;
+  }
+  
+  // 使用第一个链接的文本
+  return firstLink.text.length > 50 ? firstLink.text.substring(0, 47) + '...' : firstLink.text;
+}
+
+function convertPathToTitle(pattern: string): string {
+  const pathMap: Record<string, string> = {
+    '/news': '新闻动态',
+    '/article': '文章列表',
+    '/notice': '通知公告',
+    '/policy': '政策文件',
+    '/zwgk': '政务公开',
+    '/gsgg': '公示公告',
+    '/sydwzp': '事业单位招聘',
+    '/content': '内容列表',
+    '/list': '列表页面'
+  };
+  
+  return pathMap[pattern] || pattern.replace(/\//g, ' ').trim() || '文章分组';
+}
+
+// Puppeteer快照获取HTML
+async function getSnapshotHtml(url: string): Promise<string | null> {
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--disable-images',
+        '--disable-javascript',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor',
+        '--window-size=1200,800'
+      ]
+    });
+    
+    const page = await browser.newPage();
+    page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(5000);
+    
+    await page.goto(url, { 
+      waitUntil: 'domcontentloaded'
+    });
+    
+    // 等待页面稳定
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const html = await page.content();
+    return html;
+  } catch (error) {
+    console.log('Puppeteer snapshot failed:', error);
+    return null;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
 function segmentByHeadings(url: string, html: string) {
   const $ = cheerio.load(html);
   const hostname = new URL(url).hostname;
-
-  function isSameHost(href: string) {
-    try {
-      const u = new URL(href, url);
-      return u.hostname === hostname;
-    } catch {
-      return false;
-    }
-  }
-
-  function normalizeUrl(href: string) {
-    try {
-      return new URL(href, url).href;
-    } catch {
-      return '';
-    }
-  }
 
   const headingSelectors = 'h1, h2, h3';
   const groups: Array<{ heading: string; articles: Array<{ title: string; link: string; pubDate: string }> }> = [];
@@ -138,16 +453,22 @@ function segmentByHeadings(url: string, html: string) {
         if (!text || !href) return;
         if (text.length < 4 || text.length > 100) return;
         if (/首页|上一页|下一页|更多|返回/.test(text)) return;
-        const full = normalizeUrl(href);
-        if (!full || !isSameHost(full)) return;
-        if (!isLikelyArticle(text, full, name)) return;
+        const full = normalizeUrl(href, url);
+        if (!full || !isSameHost(full, url)) return;
+        // 简化的文章判断逻辑
+        if (text.length < 5 || text.length > 100) return;
+        if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+        
         // 附加日期判定：若文本中无日期，尝试在邻近节点找
+        const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
         let hasDate = dateRegex.test(text);
         if (!hasDate) {
           const near = $(a).parent().text();
           hasDate = dateRegex.test(near);
         }
+        
         // 对于招聘栏目，优先保留有日期的项
+        const isRecruitListPage = /hrss\.gd\.gov\.cn/.test(hostname) && /\/zwgk\/sydwzp\//.test(url);
         if (isRecruitListPage && !hasDate) return;
         articles.push({ title: text.replace(/\s+/g, ' '), link: full, pubDate: new Date().toISOString() });
       });
@@ -177,8 +498,7 @@ async function updateWebpageFeeds() {
         const response = await fetch(feed.url, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-          },
-          timeout: 30000
+          }
         });
         
         if (response.ok) {
@@ -201,7 +521,7 @@ async function updateWebpageFeeds() {
               const g = groups.find(x => x.heading === match);
               if (g) newArticles = g.articles;
             }
-            if (!newArticles.length && groups.length) newArticles = groups[0].articles;
+            if (!newArticles.length && groups.length && groups[0]) newArticles = groups[0].articles;
           } catch {
             newArticles = [];
           }
@@ -515,10 +835,12 @@ export async function feedRoutes(app: FastifyInstance) {
       // 使用选择器抓取内容
       const scrapedData = await page.evaluate((sel) => {
         const elements = document.querySelectorAll(sel.title);
-        const items = [];
+        const items: Array<{ title: string; content: string; link: string; time: string }> = [];
         
         for (let i = 0; i < Math.min(elements.length, 10); i++) {
           const element = elements[i];
+          if (!element) continue;
+          
           const title = element.textContent?.trim() || '';
           const link = element.closest('a')?.href || '';
           
@@ -527,7 +849,7 @@ export async function feedRoutes(app: FastifyInstance) {
           const content = contentEl?.textContent?.trim() || '';
           
           // 尝试找到时间
-          const timeEl = element.closest('*')?.querySelector(sel.time);
+          const timeEl = sel.time ? element.closest('*')?.querySelector(sel.time) : null;
           const time = timeEl?.textContent?.trim() || new Date().toISOString();
           
           if (title) {
@@ -588,7 +910,7 @@ export async function feedRoutes(app: FastifyInstance) {
           .map(h => ({ text: h.textContent?.trim(), tag: h.tagName }));
         const links = Array.from(document.querySelectorAll('a[href]'))
           .slice(0, 10)
-          .map(a => ({ text: a.textContent?.trim(), href: a.href }));
+          .map(a => ({ text: a.textContent?.trim(), href: a.getAttribute('href') || '' }));
         
         return { title, headings, links };
       });
@@ -646,7 +968,6 @@ export async function feedRoutes(app: FastifyInstance) {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
-        timeout: 30000
       });
       
       if (!response.ok) {
@@ -675,7 +996,6 @@ export async function feedRoutes(app: FastifyInstance) {
               headers: {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
               },
-              timeout: 20000
             });
             if (!res.ok) return [] as any[];
             const html2 = await res.text();
@@ -724,7 +1044,7 @@ export async function feedRoutes(app: FastifyInstance) {
           // 如果首页没找到，尝试根据已知路径猜测一个列表入口
           if (!candidateHref) {
             const guesses = cfg.hrefCandidates.filter(k => k.startsWith('/'));
-            if (guesses.length > 0) {
+            if (guesses.length > 0 && guesses[0]) {
               candidateHref = new URL(guesses[0], url).href;
             }
           }
@@ -753,22 +1073,7 @@ export async function feedRoutes(app: FastifyInstance) {
       }
 
       // 通用方案：按 H1/H2/H3 标题分组，抽取其后相邻区域的文章链接
-      function isSameHost(href: string) {
-        try {
-          const u = new URL(href, url);
-          return u.hostname === hostname;
-        } catch {
-          return false;
-        }
-      }
 
-      function normalizeUrl(href: string) {
-        try {
-          return new URL(href, url).href;
-        } catch {
-          return '';
-        }
-      }
 
       const headingSelectors = 'h1, h2, h3';
       const categoriesByHeading: any[] = [];
@@ -795,8 +1100,8 @@ export async function feedRoutes(app: FastifyInstance) {
             if (!text || !href) return;
             if (text.length < 4 || text.length > 100) return;
             if (/首页|上一页|下一页|更多|返回/.test(text)) return;
-            const full = normalizeUrl(href);
-            if (!full || !isSameHost(full)) return; // 仅同域
+            const full = normalizeUrl(href, url);
+            if (!full || !isSameHost(full, url)) return; // 仅同域
             articles.push({ title: text, link: full, pubDate: new Date().toISOString() });
           });
           // 如果当前节点本身就是列表，也抓取
@@ -805,12 +1110,17 @@ export async function feedRoutes(app: FastifyInstance) {
               const text = $(a).text().trim();
               const href = $(a).attr('href') || '';
               if (!text || !href) return;
-              const full = normalizeUrl(href);
-              if (!full || !isSameHost(full)) return;
+              const full = normalizeUrl(href, url);
+              if (!full || !isSameHost(full, url)) return;
               if (/首页|上一页|下一页|更多|返回/.test(text)) return;
               if (text.length < 4 || text.length > 100) return;
-              if (!isLikelyArticle(text, full, name)) return;
+              // 简化的文章判断逻辑
+              if (text.length < 5 || text.length > 100) return;
+              if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+              
+              const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
               let hasDate = dateRegex.test(text) || dateRegex.test($(a).parent().text());
+              const isRecruitListPage = /hrss\.gd\.gov\.cn/.test(hostname) && /\/zwgk\/sydwzp\//.test(url);
               if (isRecruitListPage && !hasDate) return;
               articles.push({ title: text.replace(/\s+/g, ' '), link: full, pubDate: new Date().toISOString() });
             });
@@ -878,7 +1188,6 @@ export async function feedRoutes(app: FastifyInstance) {
           const gotoPromise = page.goto(url, {
             // 第一次快速：domcontentloaded；若失败再用 networkidle2
             waitUntil: attempt === 1 ? 'domcontentloaded' : 'networkidle2',
-            timeout: 15000
           });
           // 限制整体导航时间，避免长时间卡住
           await Promise.race([
@@ -888,7 +1197,7 @@ export async function feedRoutes(app: FastifyInstance) {
 
           // 为避免 evaluate 中的打包辅助符号报错，改为简单等待+一次性滚动
           try {
-            await page.waitForTimeout(attempt === 1 ? 400 : 900);
+            await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 400 : 900));
             await page.evaluate(() => {
               const max = 2000;
               const step = 600;
@@ -897,18 +1206,17 @@ export async function feedRoutes(app: FastifyInstance) {
               }
               window.scrollTo(0, 0);
             });
-            await page.waitForTimeout(400);
+            await new Promise(resolve => setTimeout(resolve, 400));
           } catch {}
 
           const screenshot = await page.screenshot({
             fullPage: true,
-            type: 'jpeg',
-            quality: 85
+            type: 'jpeg'
           });
           await browser.close();
 
           return {
-            screenshot: `data:image/jpeg;base64,${screenshot.toString('base64')}`,
+            screenshot: `data:image/jpeg;base64,${Buffer.from(screenshot).toString('base64')}`,
             url
           };
         } catch (e) {
@@ -957,7 +1265,7 @@ export async function feedRoutes(app: FastifyInstance) {
     console.log('Received categories:', JSON.stringify(categories, null, 2));
     
     try {
-      const createdFeeds = [];
+      const createdFeeds: Array<{ id: string; title: string | null; articlesCount: number }> = [];
       
       for (const category of categories) {
         console.log(`Processing category: ${category.name}, articles count: ${category.articles?.length || 0}`);
@@ -1016,29 +1324,96 @@ export async function feedRoutes(app: FastifyInstance) {
 
   // 新增：网页词条分段（供前端“拖入”使用）
   app.post('/webpage-segmentation', async (req, reply) => {
-    const schema = z.object({ url: z.string().url() });
+    const schema = z.object({ 
+      url: z.string().url(),
+      mode: z.enum(['auto', 'headings', 'cluster', 'pattern']).optional().default('auto')
+    });
     const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: 'Invalid url' });
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid url or mode' });
 
-    const { url } = parsed.data;
+    const { url, mode } = parsed.data;
     try {
       const response = await fetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
-        timeout: 25000
       });
       if (!response.ok) return reply.code(400).send({ error: 'Failed to fetch webpage' });
-      const html = await response.text();
-      const groups = segmentByHeadings(url, html);
-      // 将第一个链接文本作为该组“预览文案”
+      
+      // 检测编码并解码
+      const contentType = response.headers.get('content-type') || '';
+      const buffer = await response.arrayBuffer();
+      let html: string;
+      
+      if (/charset=gbk|charset=gb2312/i.test(contentType)) {
+        html = iconv.decode(Buffer.from(buffer), 'gbk');
+      } else {
+        html = new TextDecoder('utf-8').decode(buffer);
+      }
+
+      let groups: any[] = [];
+      let suggestedTitle = '';
+
+      if (mode === 'auto') {
+        // 自动模式：尝试所有策略，选择最佳结果
+        const [headingsResult, clusterResult, patternResult] = await Promise.allSettled([
+          segmentByHeadings(url, html),
+          segmentByClusters(url, html),
+          segmentByPathPatterns(url, html)
+        ]);
+
+        const allGroups: any[] = [];
+        if (headingsResult.status === 'fulfilled') allGroups.push(...headingsResult.value);
+        if (clusterResult.status === 'fulfilled') allGroups.push(...clusterResult.value);
+        if (patternResult.status === 'fulfilled') allGroups.push(...patternResult.value);
+
+        // 去重并合并相似组
+        groups = mergeSimilarGroups(allGroups);
+        suggestedTitle = extractSuggestedTitle(html, url);
+      } else if (mode === 'headings') {
+        groups = segmentByHeadings(url, html);
+        suggestedTitle = extractSuggestedTitle(html, url);
+      } else if (mode === 'cluster') {
+        groups = segmentByClusters(url, html);
+        suggestedTitle = extractSuggestedTitle(html, url);
+      } else if (mode === 'pattern') {
+        groups = segmentByPathPatterns(url, html);
+        suggestedTitle = extractSuggestedTitle(html, url);
+      }
+
+      // 如果静态解析失败，尝试Puppeteer快照
+      if (groups.length === 0) {
+        try {
+          const snapshotHtml = await getSnapshotHtml(url);
+          if (snapshotHtml) {
+            if (mode === 'auto' || mode === 'headings') {
+              groups = segmentByHeadings(url, snapshotHtml);
+            } else if (mode === 'cluster') {
+              groups = segmentByClusters(url, snapshotHtml);
+            } else if (mode === 'pattern') {
+              groups = segmentByPathPatterns(url, snapshotHtml);
+            }
+          }
+        } catch (e) {
+          console.log('Puppeteer fallback failed:', e);
+        }
+      }
+
+      // 格式化输出
       const payload = groups.map(g => ({
-        titleToken: g.heading,
+        titleToken: g.titleToken || g.heading,
         contentTokensPreview: g.articles[0]?.title || '',
-        articles: g.articles
+        articles: g.articles.slice(0, 50) // 限制每组最多50篇文章
       })).slice(0, 15);
-      return { groups: payload };
+
+      return { 
+        groups: payload,
+        suggestedTitle,
+        mode,
+        totalGroups: groups.length
+      };
     } catch (e) {
+      console.error('Segmentation error:', e);
       return reply.code(500).send({ error: 'Segmentation failed' });
     }
   });
@@ -1046,6 +1421,7 @@ export async function feedRoutes(app: FastifyInstance) {
   // 新增：根据用户选择生成RSS订阅源
   app.post('/webpage-build-rss', async (req, reply) => {
     const schema = z.object({
+      userId: z.string().optional(),
       url: z.string().url(),
       titleToken: z.string(),
       articles: z.array(z.object({ title: z.string(), link: z.string(), pubDate: z.string().optional() }))
@@ -1053,14 +1429,18 @@ export async function feedRoutes(app: FastifyInstance) {
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid payload' });
 
-    const userId = (req as any).user?.sub as string;
-    const { url, titleToken, articles } = parsed.data;
+    const { userId, url, titleToken, articles } = parsed.data;
+    const actualUserId = userId || (req as any).user?.sub;
     try {
       const host = new URL(url).hostname;
       const safeTitle = `${host}/${titleToken}`.replace(/[\n\r\t]+/g, ' ').slice(0, 180);
 
       // 校验用户是否存在（防止旧 token 指向已不存在的用户导致外键错误）
-      const userExists = await prisma.user.findUnique({ where: { id: userId } });
+      if (!actualUserId) {
+        return reply.code(401).send({ error: 'Invalid user', message: '用户ID不能为空' });
+      }
+      
+      const userExists = await prisma.user.findUnique({ where: { id: actualUserId } });
       if (!userExists) {
         return reply.code(401).send({ error: 'Invalid user', message: '用户不存在或登录已过期，请重新登录' });
       }
@@ -1094,7 +1474,7 @@ export async function feedRoutes(app: FastifyInstance) {
       }
 
       const feed = await prisma.feed.create({
-        data: { title: safeTitle, url, userId, groupId: null }
+        data: { title: safeTitle, url, userId: actualUserId, groupId: null }
       });
 
       let created = 0;
