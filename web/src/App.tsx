@@ -1093,15 +1093,15 @@ export default function App() {
                                 : 'hover:bg-gray-50 border border-transparent'
                             }`}
                           >
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center">
                               <button
                                 onClick={() => loadItems(feed.id)}
-                                className="flex-1 text-left"
+                                className="flex-1 text-left min-w-0 mr-3"
                               >
                                 <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
                                 <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
                               </button>
-                              <div className="flex items-center space-x-2 ml-2">
+                              <div className="flex items-center space-x-2 flex-shrink-0">
                                 <div className="relative">
                                   <select
                                     value={feed.groupId || ''}
@@ -1225,15 +1225,15 @@ export default function App() {
                                       : 'hover:bg-gray-50 border border-transparent'
                                   }`}
                                 >
-                                  <div className="flex items-center justify-between">
+                                  <div className="flex items-center">
                                     <button
                                       onClick={() => loadItems(feed.id)}
-                                      className="flex-1 text-left"
+                                      className="flex-1 text-left min-w-0 mr-3"
                                     >
                                       <div className="font-medium truncate">{feed.title || '未命名订阅源'}</div>
                                       <div className="text-xs text-gray-500 truncate mt-1">{feed.url}</div>
                                     </button>
-                                    <div className="flex items-center space-x-2 ml-2">
+                                    <div className="flex items-center space-x-2 flex-shrink-0">
                                       <div className="relative">
                                         <select
                                           value={feed.groupId || ''}
@@ -1576,9 +1576,9 @@ export default function App() {
                 {showCategorySelection && segGroups.length > 0 && (
                   <div className="space-y-4">
                     <h4 className="text-sm font-medium text-gray-700">拖拽选择：左侧上框拖入1个标题词条，下框拖入多篇文章词条</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 min-h-[600px]">
                       {/* 左：上下两个拖入框 */}
-                      <div className="md:col-span-1 space-y-3">
+                      <div className="md:col-span-1 flex flex-col h-full">
                         <div
                           onDragOver={(e)=>e.preventDefault()}
                           onDrop={(e)=>{
@@ -1593,7 +1593,7 @@ export default function App() {
                               setHasTitleBeenEdited(true)
                             }
                           }}
-                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[64px] bg-purple-50/40"
+                          className="border-2 border-purple-400 rounded-lg p-3 bg-purple-50/40 mb-3"
                         >
                           <div className="text-xs text-gray-700 font-medium mb-2">标题词条（拖入或编辑）</div>
                           <input
@@ -1648,28 +1648,43 @@ export default function App() {
                               } catch {}
                             }
                           }}
-                          className="border-2 border-purple-400 rounded-lg p-3 min-h-[160px] bg-purple-50/30"
+                          className="border-2 border-purple-400 rounded-lg p-3 flex-1 bg-purple-50/30 flex flex-col"
                         >
                           <div className="flex items-center justify-between mb-2">
-                            <div className="text-xs text-gray-700 font-medium">文章内容（可多个）</div>
+                            <div className="text-xs text-gray-700 font-medium">
+                              文章内容（可多个）
+                              {dragSelectedArticles.length > 0 && (
+                                <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-[10px] font-medium">
+                                  {dragSelectedArticles.length} 篇
+                                </span>
+                              )}
+                            </div>
                             <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
                           </div>
-                          <div className="space-y-1 max-h-56 overflow-auto">
+                          <div className="space-y-1 flex-1 overflow-auto">
                             {dragSelectedArticles.map((a,i)=> (
                               <div key={i} className="text-xs bg-gray-50 p-2 rounded border flex items-center justify-between">
-                                <span className="truncate mr-2">{a.title || a.text || a.link}</span>
-                                <button className="text-[11px] text-red-500" title="移除" aria-label="移除" onClick={()=>setDragSelectedArticles(prev=>prev.filter((_,idx)=>idx!==i))}>-</button>
+                                <span className="flex-1 break-words">{a.title || a.text || a.link}</span>
+                                <button 
+                                  className="text-gray-400 hover:text-red-500 transition-colors p-1 ml-2 flex-shrink-0"
+                                  title="删除此文章"
+                                  onClick={() => setDragSelectedArticles(prev => prev.filter((_, idx) => idx !== i))}
+                                >
+                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
                               </div>
                             ))}
                           </div>
                         </div>
                       </div>
                       {/* 右：统一候选池（标题 + 文章组） */}
-                      <div className="md:col-span-2 border border-gray-200 rounded-lg p-3">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div>
+                      <div className="md:col-span-2 border border-gray-200 rounded-lg p-3 flex flex-col h-full">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-0">
+                          <div className="flex flex-col">
                             <div className="text-xs text-gray-700 font-medium mb-2">标题词条（可拖动到左上框）</div>
-                            <div className="space-y-2 max-h-64 overflow-auto">
+                            <div className="space-y-2 flex-1 overflow-auto">
                               {segGroupsLocal.map((g, idx) => (
                                 <div
                                   key={idx}
@@ -1686,7 +1701,7 @@ export default function App() {
                               ))}
                             </div>
                           </div>
-                          <div>
+                          <div className="flex flex-col">
                             <div className="flex items-center justify-between mb-2">
                               <div className="text-xs text-gray-700 font-medium">文章词条（可拖拽整组到左下框）</div>
                               <div className="flex items-center space-x-2">
@@ -1702,16 +1717,16 @@ export default function App() {
                                 <button className="text-[11px] text-gray-600" onClick={()=>setDragSelectedArticles([])}>清空</button>
                               </div>
                             </div>
-                            <div className="space-y-3 max-h-64 overflow-auto">
+                            <div className="space-y-3 flex-1 overflow-auto">
                               {segGroupsLocal.map((g, gi) => {
                                 const expanded = segExpandedSet.has(gi)
                                 const articles = g.articles || []
                                 const preview = articles[0]
                                 return (
                                   <div key={gi} className="border rounded-lg">
-                                    <div className="flex items-center justify-between px-2 py-2 bg-gray-50 border-b">
-                                      <div className="text-xs font-medium truncate">{g.titleToken || g.heading}</div>
-                                      <div className="flex items-center space-x-2">
+                                    <div className="flex items-center px-2 py-2 bg-gray-50 border-b">
+                                      <div className="text-xs font-medium flex-1 truncate mr-3">{g.titleToken || g.heading}</div>
+                                      <div className="flex items-center space-x-2 flex-shrink-0">
                                         <span className="text-[11px] text-gray-500">{articles.length} 篇</span>
                                         <button className="text-[11px] text-purple-600" onClick={()=>{
                                           setSegExpandedSet(prev=>{
@@ -1732,12 +1747,9 @@ export default function App() {
                                       </div>
                                     </div>
                                     <div className="p-2">
-                                      {preview && (
-                                        <div className="text-xs bg-white p-2 rounded border mb-1">{preview.title || preview.text || preview.link}</div>
-                                      )}
                                       {expanded && (
                                         <div className="space-y-1">
-                                          {articles.slice(1).map((a:any, ai:number) => (
+                                          {articles.map((a:any, ai:number) => (
                                             <div
                                               key={ai}
                                               draggable
@@ -1745,10 +1757,36 @@ export default function App() {
                                                 e.dataTransfer.setData('type','article')
                                                 e.dataTransfer.setData('payload', JSON.stringify(a))
                                               }}
-                                              className="text-xs bg-gray-50 p-2 rounded border cursor-move"
+                                              className="text-xs bg-gray-50 p-2 rounded border cursor-move flex items-center justify-between"
                                               title="拖拽到左下框或其他组"
                                             >
-                                              {a.title || a.text || a.link}
+                                              <span className="truncate mr-2">{a.title || a.text || a.link}</span>
+                                              <button 
+                                                className="text-gray-400 hover:text-red-500 transition-colors p-1"
+                                                title="删除此文章"
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  // 从当前分组中删除文章
+                                                  setSegGroupsLocal(prev => 
+                                                    prev.map((group, groupIndex) => 
+                                                      groupIndex === gi 
+                                                        ? {
+                                                            ...group,
+                                                            articles: group.articles?.filter((article: any) => article.link !== a.link) || []
+                                                          }
+                                                        : group
+                                                    )
+                                                  )
+                                                  // 同时从左侧已选择的文章中删除
+                                                  setDragSelectedArticles(prev => 
+                                                    prev.filter(article => article.link !== a.link)
+                                                  )
+                                                }}
+                                              >
+                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                              </button>
                                             </div>
                                           ))}
                                         </div>

@@ -232,14 +232,18 @@ function segmentByClusters(url: string, html: string) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
   
-  return topClusters.map(cluster => ({
-    titleToken: cluster.titleToken,
-    articles: cluster.links.map(link => ({
+  return topClusters.map(cluster => {
+    const articles = cluster.links.map(link => ({
       title: link.text,
       link: link.fullUrl,
       pubDate: new Date().toISOString()
-    }))
-  }));
+    }));
+    const bestTitle = selectBestTitle(cluster.titleToken, articles);
+    return {
+      titleToken: bestTitle,
+      articles
+    };
+  });
 }
 
 // 路径模式聚合分段策略
@@ -290,14 +294,19 @@ function segmentByPathPatterns(url: string, html: string) {
     .sort((a, b) => b[1].length - a[1].length)
     .slice(0, 8);
   
-  return filteredPatterns.map(([pattern, links]) => ({
-    titleToken: convertPathToTitle(pattern),
-    articles: links.slice(0, 50).map(link => ({
+  return filteredPatterns.map(([pattern, links]) => {
+    const articles = links.slice(0, 50).map(link => ({
       title: link.text,
       link: link.fullUrl,
       pubDate: new Date().toISOString()
-    }))
-  }));
+    }));
+    const originalTitle = convertPathToTitle(pattern);
+    const bestTitle = selectBestTitle(originalTitle, articles);
+    return {
+      titleToken: bestTitle,
+      articles
+    };
+  });
 }
 
 // 合并相似组
@@ -352,6 +361,106 @@ function extractClusterTitle(links: any[], $: cheerio.CheerioAPI): string {
   
   // 使用第一个链接的文本
   return firstLink.text.length > 50 ? firstLink.text.substring(0, 47) + '...' : firstLink.text;
+}
+
+// 智能标题选择函数
+function selectBestTitle(originalTitle: string, articles: any[]): string {
+  if (!originalTitle || articles.length === 0) return originalTitle;
+  
+  // 过滤掉无用的标题
+  const uselessTitles = /^(zwgk|gsgg|zwgk\s+gsgg|2024年度广东省人力资源和社|年度|广东省|人力资源|社会保障|部门|网站|首页|导航|菜单|链接|更多|返回|上一页|下一页|第.*页|共.*页)$/i;
+  if (uselessTitles.test(originalTitle)) {
+    // 尝试从文章标题中提取更好的标题
+    return extractTitleFromArticles(articles);
+  }
+  
+  // 如果原标题包含面包屑导航模式，尝试提取最后一个部分
+  const breadcrumbMatch = originalTitle.match(/^(.+\s*>\s*)+(.+)$/);
+  if (breadcrumbMatch && originalTitle.length < 50 && breadcrumbMatch[2]) {
+    const lastPart = breadcrumbMatch[2].trim();
+    if (lastPart.length > 2 && lastPart.length < 30) {
+      return lastPart;
+    }
+  }
+  
+  return originalTitle;
+}
+
+// 从文章标题中提取最佳标题
+function extractTitleFromArticles(articles: any[]): string {
+  if (articles.length === 0) return '未命名分组';
+  
+  // 收集所有文章标题
+  const titles = articles.map(a => a.title || '').filter(t => t && t.length > 0);
+  
+  // 优先寻找短标题（可能是分类标题）
+  const shortTitles = titles.filter(title => 
+    title.length >= 2 && 
+    title.length <= 10 &&
+    !/^(首页|上一页|下一页|更多|返回)$/.test(title) &&
+    !/^(zwgk|gsgg|2024年度广东省人力资源和社|年度|广东省|人力资源|社会保障|部门|网站|首页|导航|菜单|链接|更多|返回|上一页|下一页|第.*页|共.*页)$/i.test(title)
+  );
+  
+  if (shortTitles.length > 0) {
+    // 如果有多个短标题，选择出现频率最高的
+    const titleCount = new Map<string, number>();
+    shortTitles.forEach(title => {
+      titleCount.set(title, (titleCount.get(title) || 0) + 1);
+    });
+    
+    const mostCommon = Array.from(titleCount.entries())
+      .sort((a, b) => b[1] - a[1])[0];
+    
+    if (mostCommon && mostCommon[1] > 1) {
+      return mostCommon[0];
+    }
+    
+    return shortTitles[0];
+  }
+  
+  // 寻找共同的关键词
+  const commonKeywords = findCommonKeywords(titles);
+  if (commonKeywords.length > 0) {
+    return commonKeywords[0] || '未命名分组';
+  }
+  
+  // 寻找最合适的标题
+  const bestTitle = titles.find(title => 
+    title.length >= 4 && 
+    title.length <= 20 && 
+    !/^(通知|公告|公示|招聘|拟聘|集中公开招聘|高校毕业生)$/.test(title) &&
+    !/^(首页|上一页|下一页|更多|返回)$/.test(title)
+  );
+  
+  if (bestTitle) return bestTitle;
+  
+  // 使用第一个标题，但截断过长的
+  const firstTitle = titles[0] || '未命名分组';
+  return firstTitle.length > 30 ? firstTitle.substring(0, 27) + '...' : firstTitle;
+}
+
+// 寻找共同关键词
+function findCommonKeywords(titles: string[]): string[] {
+  const keywordCount = new Map<string, number>();
+  
+  titles.forEach(title => {
+    // 提取关键词（去除标点符号，按长度过滤）
+    const words = title
+      .replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, ' ')
+      .split(/\s+/)
+      .filter(word => word.length >= 2 && word.length <= 10);
+    
+    words.forEach(word => {
+      keywordCount.set(word, (keywordCount.get(word) || 0) + 1);
+    });
+  });
+  
+  // 返回出现频率最高的关键词
+  return Array.from(keywordCount.entries())
+    .filter(([_, count]) => count >= 2) // 至少出现2次
+    .sort((a, b) => b[1] - a[1])
+    .map(([word, _]) => word)
+    .slice(0, 3); // 最多返回3个
 }
 
 function convertPathToTitle(pattern: string): string {
@@ -453,11 +562,17 @@ function segmentByHeadings(url: string, html: string) {
         if (!text || !href) return;
         if (text.length < 4 || text.length > 100) return;
         if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+        
+        // 过滤面包屑导航和页面标题等无用信息
+        if (/^(zwgk|gsgg|2024年度广东省人力资源和社|年度|广东省|人力资源|社会保障|部门|网站|首页|导航|菜单|链接|更多|返回|上一页|下一页|第.*页|共.*页)$/i.test(text)) return;
+        
+        // 过滤面包屑导航模式（如：首页 > 政务公开 > 通知公告）
+        if (/^(.+\s*>\s*)+(.+)$/.test(text) && text.length < 50) return;
+        
         const full = normalizeUrl(href, url);
         if (!full || !isSameHost(full, url)) return;
         // 简化的文章判断逻辑
         if (text.length < 5 || text.length > 100) return;
-        if (/首页|上一页|下一页|更多|返回/.test(text)) return;
         
         // 附加日期判定：若文本中无日期，尝试在邻近节点找
         const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
@@ -481,7 +596,10 @@ function segmentByHeadings(url: string, html: string) {
       seen.add(a.link);
       return true;
     }).slice(0, 30);
-    if (unique.length >= 2) groups.push({ heading: name, articles: unique });
+    if (unique.length >= 2) {
+      const bestTitle = selectBestTitle(name, unique);
+      groups.push({ heading: bestTitle, articles: unique });
+    }
   });
 
   return groups;
@@ -867,7 +985,7 @@ export async function feedRoutes(app: FastifyInstance) {
         data: { 
           userId, 
           url, 
-          title: `网页抓取: ${new URL(url).hostname}` 
+          title: `网页抓取` 
         } 
       });
 
@@ -1013,6 +1131,12 @@ export async function feedRoutes(app: FastifyInstance) {
               const fullUrl = href.startsWith('http') ? href : new URL(href, listUrl).href;
               // 过滤导航/面包屑等非文章链接
               if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+              
+              // 过滤面包屑导航和页面标题等无用信息
+              if (/^(zwgk|gsgg|2024年度广东省人力资源和社|年度|广东省|人力资源|社会保障|部门|网站|首页|导航|菜单|链接|更多|返回|上一页|下一页|第.*页|共.*页)$/i.test(text)) return;
+              
+              // 过滤面包屑导航模式（如：首页 > 政务公开 > 通知公告）
+              if (/^(.+\s*>\s*)+(.+)$/.test(text) && text.length < 50) return;
               // 仅保留栏目内路径
               try {
                 const p = new URL(fullUrl).pathname;
@@ -1100,6 +1224,12 @@ export async function feedRoutes(app: FastifyInstance) {
             if (!text || !href) return;
             if (text.length < 4 || text.length > 100) return;
             if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+            
+            // 过滤面包屑导航和页面标题等无用信息
+            if (/^(zwgk|gsgg|2024年度广东省人力资源和社|年度|广东省|人力资源|社会保障|部门|网站|首页|导航|菜单|链接|更多|返回|上一页|下一页|第.*页|共.*页)$/i.test(text)) return;
+            
+            // 过滤面包屑导航模式（如：首页 > 政务公开 > 通知公告）
+            if (/^(.+\s*>\s*)+(.+)$/.test(text) && text.length < 50) return;
             const full = normalizeUrl(href, url);
             if (!full || !isSameHost(full, url)) return; // 仅同域
             articles.push({ title: text, link: full, pubDate: new Date().toISOString() });
@@ -1116,7 +1246,12 @@ export async function feedRoutes(app: FastifyInstance) {
               if (text.length < 4 || text.length > 100) return;
               // 简化的文章判断逻辑
               if (text.length < 5 || text.length > 100) return;
-              if (/首页|上一页|下一页|更多|返回/.test(text)) return;
+              
+              // 过滤面包屑导航和页面标题等无用信息
+              if (/^(zwgk|gsgg|2024年度广东省人力资源和社|年度|广东省|人力资源|社会保障|部门|网站|首页|导航|菜单|链接|更多|返回|上一页|下一页|第.*页|共.*页)$/i.test(text)) return;
+              
+              // 过滤面包屑导航模式（如：首页 > 政务公开 > 通知公告）
+              if (/^(.+\s*>\s*)+(.+)$/.test(text) && text.length < 50) return;
               
               const dateRegex = /(20\d{2}[\-\.年]\s*\d{1,2}([\-\.月]\s*\d{1,2})?|20\d{2}\s*年\s*\d{1,2}\s*月)/;
               let hasDate = dateRegex.test(text) || dateRegex.test($(a).parent().text());
@@ -1273,7 +1408,7 @@ export async function feedRoutes(app: FastifyInstance) {
           // 创建RSS订阅源
           const feed = await prisma.feed.create({
             data: {
-              title: `${new URL(url).hostname}/${category.name}`,
+              title: category.name,
               url: url,
               userId: userId,
               groupId: null
@@ -1400,6 +1535,7 @@ export async function feedRoutes(app: FastifyInstance) {
       }
 
       // 格式化输出
+
       const payload = groups.map(g => ({
         titleToken: g.titleToken || g.heading,
         contentTokensPreview: g.articles[0]?.title || '',
@@ -1433,7 +1569,7 @@ export async function feedRoutes(app: FastifyInstance) {
     const actualUserId = userId || (req as any).user?.sub;
     try {
       const host = new URL(url).hostname;
-      const safeTitle = `${host}/${titleToken}`.replace(/[\n\r\t]+/g, ' ').slice(0, 180);
+      const safeTitle = titleToken.replace(/[\n\r\t]+/g, ' ').slice(0, 180);
 
       // 校验用户是否存在（防止旧 token 指向已不存在的用户导致外键错误）
       if (!actualUserId) {
