@@ -1,0 +1,10 @@
+259249c chore: 准备上传到GitHub - 添加环境变量示例文件
+518f5e3 chore: 添加.gitignore文件，准备上传到GitHub
+ff614b4 feat: 优化网页快照性能和容器高度逻辑
+efd86cf 实现更新频率调整和状态显示功能 - RSS更新30秒，网页RSS更新30分钟，文章列表显示更新信息
+ab8258d 修复文章词条删除功能 - 完善删除逻辑，支持从分组中删除文章并同步更新状态
+e24227f feat: 添加网页快照加载提示功能
+f2b0479 chore(snapshot): snapshot before further changes
+2b81f9e chore(snapshot): save working state before hrss filters and prisma fixes [20250911-191920]
+718790b feat: improve RSS import error handling with detailed diagnostics
+df4742c fix: improve group display and add group deletion functionality
