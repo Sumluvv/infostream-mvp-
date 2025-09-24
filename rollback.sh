@@ -8,7 +8,7 @@ echo "🔄 Infostream MVP - 版本回滚脚本"
 echo "=================================="
 
 # 检查参数
-VERSION=${1:-"v1.0-valuation-complete"}
+VERSION=${1:-"v2.0-frontend-complete"}
 
 echo "📋 可用版本:"
 git tag -l | sort -V
