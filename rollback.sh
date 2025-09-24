@@ -71,7 +71,40 @@ echo "=================================="
 echo "📊 当前版本: $CURRENT_VERSION"
 echo "📈 健康检查: curl http://127.0.0.1:3002/health"
 echo ""
+echo "📋 版本说明:"
+case $VERSION in
+    "v3.1-final")
+        echo "🎉 最终版本 - 项目100%完成"
+        echo "✅ 包含所有功能: 基础设施 + 数据ETL + 后端API + 前端界面 + AI评分系统"
+        echo "🌐 访问地址: http://localhost:3000"
+        ;;
+    "v3.0-ai-complete")
+        echo "🤖 AI评分系统完成版本"
+        echo "✅ 包含功能: 基础设施 + 数据ETL + 后端API + 前端界面 + AI评分系统"
+        echo "🌐 访问地址: http://localhost:3000"
+        ;;
+    "v2.1-dcf-complete")
+        echo "💰 DCF估值模型完成版本"
+        echo "✅ 包含功能: 基础设施 + 数据ETL + 后端API + 前端界面 + DCF估值"
+        echo "🌐 访问地址: http://localhost:3000"
+        ;;
+    "v2.0-frontend-complete")
+        echo "🎨 前端界面完成版本"
+        echo "✅ 包含功能: 基础设施 + 数据ETL + 后端API + 前端界面"
+        echo "🌐 访问地址: http://localhost:3000"
+        ;;
+    "v1.0-valuation-complete")
+        echo "📊 估值系统完成版本"
+        echo "✅ 包含功能: 基础设施 + 数据ETL + 后端API"
+        echo "🌐 访问地址: http://127.0.0.1:3002"
+        ;;
+    *)
+        echo "📝 其他版本"
+        ;;
+esac
+echo ""
 echo "🚀 启动服务:"
 echo "   cd server && npm run dev"
+echo "   cd frontend && npm run dev"
 echo ""
 echo "📖 版本历史: git log --oneline --graph"
