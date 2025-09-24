@@ -171,6 +171,145 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       });
     }
   });
+  
+  // 获取DCF估值
+  fastify.get('/dcf/:ts_code', async (request: FastifyRequest<{ Params: { ts_code: string } }>, reply: FastifyReply) => {
+    const { ts_code } = request.params;
+    
+    try {
+      const client = await pool.connect();
+      
+      try {
+        // 获取DCF估值数据
+        const dcfQuery = `
+          SELECT 
+            v.ts_code,
+            v.as_of_date,
+            v.method,
+            v.dcf_base,
+            v.dcf_range_low,
+            v.dcf_range_high,
+            v.input_json,
+            v.result_json,
+            v.created_at
+          FROM valuations v
+          WHERE v.ts_code = $1 AND v.method = 'DCF'
+          ORDER BY v.as_of_date DESC, v.created_at DESC
+          LIMIT 1
+        `;
+        
+        const dcfResult = await client.query(dcfQuery, [ts_code]);
+        
+        if (dcfResult.rows.length === 0) {
+          return reply.status(404).send({
+            error: 'DCF valuation not found',
+            message: `No DCF valuation found for ${ts_code}`
+          });
+        }
+        
+        const dcf = dcfResult.rows[0];
+        const resultData = dcf.result_json || {};
+        const inputData = dcf.input_json || {};
+        
+        // 获取最新股价
+        const priceQuery = `
+          SELECT close, trade_date
+          FROM prices_ohlcv 
+          WHERE ts_code = $1 
+          ORDER BY trade_date DESC 
+          LIMIT 1
+        `;
+        
+        const priceResult = await client.query(priceQuery, [ts_code]);
+        const currentPrice = priceResult.rows[0]?.close || null;
+        
+        // 构建DCF响应数据
+        const response = {
+          ts_code: dcf.ts_code,
+          as_of_date: dcf.as_of_date,
+          method: dcf.method,
+          current_price: currentPrice,
+          dcf_value: dcf.dcf_base,
+          dcf_range: {
+            low: dcf.dcf_range_low,
+            high: dcf.dcf_range_high
+          },
+          upside_downside: resultData.upside_downside || null,
+          valuation_ratios: {
+            pe_ratio: resultData.pe_ratio || null,
+            pb_ratio: resultData.pb_ratio || null
+          },
+          parameters: {
+            discount_rate: inputData.discount_rate || null,
+            terminal_growth_rate: inputData.terminal_growth_rate || null,
+            projection_years: inputData.projection_years || null
+          },
+          growth_rates: inputData.growth_rates || {},
+          projections: resultData.projections || [],
+          sensitivity_analysis: resultData.sensitivity_analysis || {},
+          enterprise_value: resultData.enterprise_value || null,
+          terminal_value: resultData.terminal_value || null,
+          analysis: {
+            dcf_analysis: getDCFAnalysis(resultData.upside_downside),
+            risk_assessment: getDCFRiskAssessment(dcf.dcf_range_low, dcf.dcf_range_high, currentPrice),
+            recommendation: getDCFRecommendation(resultData.upside_downside, dcf.dcf_range_low, dcf.dcf_range_high)
+          },
+          created_at: dcf.created_at
+        };
+        
+        return reply.send(response);
+        
+      } finally {
+        client.release();
+      }
+      
+    } catch (error) {
+      fastify.log.error('DCF API error:', error);
+      return reply.status(500).send({
+        error: 'Internal server error',
+        message: 'Failed to fetch DCF valuation data'
+      });
+    }
+  });
+  
+  // 计算DCF估值
+  fastify.post('/dcf/:ts_code/calculate', async (request: FastifyRequest<{ 
+    Params: { ts_code: string },
+    Body: {
+      discount_rate?: number;
+      terminal_growth_rate?: number;
+      projection_years?: number;
+    }
+  }>, reply: FastifyReply) => {
+    const { ts_code } = request.params;
+    const { 
+      discount_rate = 0.10, 
+      terminal_growth_rate = 0.03, 
+      projection_years = 5 
+    } = request.body;
+    
+    try {
+      // 这里可以调用Python DCF计算脚本
+      // 为了简化，我们返回一个模拟的响应
+      return reply.send({
+        message: 'DCF calculation initiated',
+        ts_code,
+        parameters: {
+          discount_rate,
+          terminal_growth_rate,
+          projection_years
+        },
+        note: 'Please run the DCF calculation script to get actual results'
+      });
+      
+    } catch (error) {
+      fastify.log.error('DCF calculation API error:', error);
+      return reply.status(500).send({
+        error: 'Internal server error',
+        message: 'Failed to initiate DCF calculation'
+      });
+    }
+  });
 }
 
 // PE分析函数
@@ -204,4 +343,38 @@ function getOverallAssessment(peRatio: number | null, pbRatio: number | null): s
   if (totalScore >= 5) return '估值合理，值得关注';
   if (totalScore >= 3) return '估值偏高，谨慎投资';
   return '估值过高，风险较大';
+}
+
+// DCF分析函数
+function getDCFAnalysis(upsideDownside: number | null): string {
+  if (!upsideDownside) return '数据不足';
+  
+  if (upsideDownside > 20) return 'DCF估值显著高于当前价格，存在较大上涨空间';
+  if (upsideDownside > 0) return 'DCF估值高于当前价格，存在上涨空间';
+  if (upsideDownside > -20) return 'DCF估值接近当前价格，估值相对合理';
+  return 'DCF估值低于当前价格，可能存在高估风险';
+}
+
+// DCF风险评估函数
+function getDCFRiskAssessment(rangeLow: number | null, rangeHigh: number | null, currentPrice: number | null): string {
+  if (!rangeLow || !rangeHigh || !currentPrice) return '数据不足';
+  
+  const rangeMid = (rangeLow + rangeHigh) / 2;
+  const rangeWidth = rangeHigh - rangeLow;
+  const rangePercent = (rangeWidth / rangeMid) * 100;
+  
+  if (rangePercent < 20) return '估值范围较窄，风险较低';
+  if (rangePercent < 40) return '估值范围适中，风险中等';
+  return '估值范围较宽，风险较高';
+}
+
+// DCF投资建议函数
+function getDCFRecommendation(upsideDownside: number | null, rangeLow: number | null, rangeHigh: number | null): string {
+  if (!upsideDownside || !rangeLow || !rangeHigh) return '数据不足，无法给出建议';
+  
+  if (upsideDownside > 30) return '强烈买入：DCF估值显著高于当前价格';
+  if (upsideDownside > 10) return '买入：DCF估值高于当前价格';
+  if (upsideDownside > -10) return '持有：DCF估值接近当前价格';
+  if (upsideDownside > -30) return '卖出：DCF估值低于当前价格';
+  return '强烈卖出：DCF估值显著低于当前价格';
 }

@@ -62,4 +62,26 @@ api.interceptors.response.use(
   }
 )
 
+// API函数
+export const apiFunctions = {
+  // 获取股票概览
+  getStockOverview: (tsCode: string) => api.get(`/feeds/overview/${tsCode}`),
+  
+  // 获取K线数据
+  getKlineData: (tsCode: string) => api.get(`/feeds/kline/${tsCode}`),
+  
+  // 获取估值数据
+  getValuation: (tsCode: string) => api.get(`/valuation/${tsCode}`),
+  
+  // 获取DCF估值数据
+  getDCFValuation: (tsCode: string) => api.get(`/valuation/dcf/${tsCode}`),
+  
+  // 计算DCF估值
+  calculateDCF: (tsCode: string, params: any) => api.post(`/valuation/dcf/${tsCode}/calculate`, params),
+  
+  // 用户认证
+  login: (credentials: any) => api.post('/auth/login', credentials),
+  register: (userData: any) => api.post('/auth/register', userData),
+}
+
 export { api }

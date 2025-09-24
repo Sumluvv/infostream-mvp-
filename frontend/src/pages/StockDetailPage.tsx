@@ -4,6 +4,7 @@ import { ArrowLeft, TrendingUp, TrendingDown, Calculator, BarChart3 } from 'luci
 import { KLineChart } from '../components/KLineChart'
 import { ValuationPanel } from '../components/ValuationPanel'
 import { TechnicalIndicators } from '../components/TechnicalIndicators'
+import DCFPanel from '../components/DCFPanel'
 import { api } from '../utils/api'
 
 interface StockDetail {
@@ -176,6 +177,9 @@ export const StockDetailPage: React.FC = () => {
           <ValuationPanel tsCode={tsCode!} />
         </div>
       </div>
+
+      {/* DCF估值分析 */}
+      <DCFPanel tsCode={tsCode!} />
 
       {/* 技术指标 */}
       <div className="card">

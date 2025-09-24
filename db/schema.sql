@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS valuations (
 );
 CREATE INDEX IF NOT EXISTS idx_valuations_ts_date ON valuations (ts_code, as_of_date);
 
+CREATE TABLE IF NOT EXISTS dcf_valuations (
+  id BIGSERIAL PRIMARY KEY,
+  ts_code TEXT NOT NULL,
+  as_of_date DATE NOT NULL,
+  current_price NUMERIC,
+  dcf_value NUMERIC,
+  upside_downside NUMERIC,
+  pe_ratio NUMERIC,
+  pb_ratio NUMERIC,
+  discount_rate NUMERIC,
+  terminal_growth_rate NUMERIC,
+  projection_years INTEGER,
+  growth_rates JSONB,
+  projections JSONB,
+  terminal_value NUMERIC,
+  pv_terminal_value NUMERIC,
+  enterprise_value NUMERIC,
+  sensitivity_analysis JSONB,
+  input_data JSONB,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (ts_code, as_of_date)
+);
+CREATE INDEX IF NOT EXISTS idx_dcf_ts_date ON dcf_valuations (ts_code, as_of_date);
+
 CREATE TABLE IF NOT EXISTS ai_scores (
   id BIGSERIAL PRIMARY KEY,
   ts_code TEXT NOT NULL,
