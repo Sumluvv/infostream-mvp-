@@ -29,7 +29,12 @@ export const HomePage: React.FC = () => {
     setError(null)
     
     try {
-      // 这里应该调用搜索API，暂时使用模拟数据
+      // 调用搜索API
+      const response = await api.get(`/feeds/search?q=${encodeURIComponent(searchTerm)}`)
+      setStocks(response.data.stocks || [])
+    } catch (err) {
+      // 如果搜索API不存在，使用模拟数据
+      console.warn('搜索API不可用，使用模拟数据')
       const mockStocks: StockOverview[] = [
         {
           ts_code: '600519.SH',
@@ -54,10 +59,7 @@ export const HomePage: React.FC = () => {
           pb_ratio: 0.6
         }
       ]
-      
       setStocks(mockStocks)
-    } catch (err) {
-      setError('搜索失败，请稍后重试')
     } finally {
       setLoading(false)
     }

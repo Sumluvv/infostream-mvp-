@@ -79,6 +79,12 @@ export const apiFunctions = {
   // 计算DCF估值
   calculateDCF: (tsCode: string, params: any) => api.post(`/valuation/dcf/${tsCode}/calculate`, params),
   
+  // 获取AI评分
+  getAIScore: (tsCode: string) => api.get(`/valuation/ai-score/${tsCode}`),
+  
+  // 计算AI评分
+  calculateAIScore: (tsCode: string) => api.post(`/valuation/ai-score/${tsCode}/calculate`),
+  
   // 用户认证
   login: (credentials: any) => api.post('/auth/login', credentials),
   register: (userData: any) => api.post('/auth/register', userData),

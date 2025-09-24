@@ -24,11 +24,11 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <BarChart3 className="h-4 w-4" />
                 <span>股票分析</span>
               </a>
-              <a href="#" className="flex items-center space-x-1 text-gray-700 hover:text-primary-600 transition-colors">
+              <a href="/stock/600519.SH" className="flex items-center space-x-1 text-gray-700 hover:text-primary-600 transition-colors">
                 <Calculator className="h-4 w-4" />
                 <span>估值计算</span>
               </a>
-              <a href="#" className="flex items-center space-x-1 text-gray-700 hover:text-primary-600 transition-colors">
+              <a href="/stock/600519.SH" className="flex items-center space-x-1 text-gray-700 hover:text-primary-600 transition-colors">
                 <Brain className="h-4 w-4" />
                 <span>AI评分</span>
               </a>

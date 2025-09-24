@@ -5,6 +5,7 @@ import { KLineChart } from '../components/KLineChart'
 import { ValuationPanel } from '../components/ValuationPanel'
 import { TechnicalIndicators } from '../components/TechnicalIndicators'
 import DCFPanel from '../components/DCFPanel'
+import { AIScorePanel } from '../components/AIScorePanel'
 import { api } from '../utils/api'
 
 interface StockDetail {
@@ -175,6 +176,7 @@ export const StockDetailPage: React.FC = () => {
         {/* 估值信息 */}
         <div className="space-y-6">
           <ValuationPanel tsCode={tsCode!} />
+          <AIScorePanel tsCode={tsCode!} />
         </div>
       </div>
 

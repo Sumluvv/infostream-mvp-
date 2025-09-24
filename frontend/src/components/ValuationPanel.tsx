@@ -216,7 +216,8 @@ export const ValuationPanel: React.FC<ValuationPanelProps> = ({ tsCode }) => {
         </div>
         <div className="card-content">
           <div className="text-center text-gray-500 py-4">
-            <p>估值历史功能开发中...</p>
+            <p>暂无历史估值数据</p>
+            <p className="text-sm mt-1">历史数据将在后续版本中提供</p>
           </div>
         </div>
       </div>
