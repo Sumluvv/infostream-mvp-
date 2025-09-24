@@ -1,5 +1,7 @@
+
 import type { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
+import { Pool } from 'pg';
 import Parser from 'rss-parser';
 import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
@@ -8,6 +10,13 @@ import iconv from 'iconv-lite';
 
 const prisma = new PrismaClient();
 const parser = new Parser();
+const pgPool = new Pool({
+  host: process.env.PGHOST || 'localhost',
+  port: Number(process.env.PGPORT || 5432),
+  database: process.env.PGDATABASE || 'infostream',
+  user: process.env.PGUSER || 'infostream',
+  password: process.env.PGPASSWORD || 'infostream',
+});
 
 // 实时更新机制
 let updateInterval: NodeJS.Timeout | null = null;
@@ -715,8 +724,12 @@ function stopUpdateTasks() {
 }
 
 export async function feedRoutes(app: FastifyInstance) {
-  // 启动实时更新任务
-  startUpdateTasks();
+  // 启动实时更新任务（可通过环境变量关闭以避免占用资源导致卡顿）
+  if (!process.env.FEEDS_DISABLE_TASKS) {
+    startUpdateTasks();
+  } else {
+    app.log.info('Feed update tasks are disabled by FEEDS_DISABLE_TASKS');
+  }
   
   app.addHook('onRequest', async (req, reply) => {
     try {
@@ -744,6 +757,72 @@ export async function feedRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'asc' }
     });
     return { groups };
+  });
+
+  // Kline + indicators
+  app.get('/kline/:ts_code', async (req, reply) => {
+    const schema = z.object({
+      ts_code: z.string(),
+      period: z.enum(['d', 'w', 'm']).optional().default('d'),
+      start: z.string().optional(),
+      end: z.string().optional(),
+      include_indicators: z.coerce.boolean().optional().default(true)
+    });
+    const params = schema.safeParse({ ...req.params, ...req.query });
+    if (!params.success) return reply.code(400).send({ error: 'Invalid params' });
+
+    const { ts_code, period, start, end, include_indicators } = params.data as any;
+    const freq = period.toUpperCase();
+    const client = await pgPool.connect();
+    try {
+      const values: any[] = [ts_code, freq];
+      let where = 'p.ts_code = $1 AND p.freq = $2';
+      if (start) { values.push(start); where += ` AND p.trade_date >= $${values.length}`; }
+      if (end) { values.push(end); where += ` AND p.trade_date <= $${values.length}`; }
+      const baseSql = `SELECT p.trade_date, p.open, p.high, p.low, p.close, p.vol, p.amount
+                       FROM prices_ohlcv p WHERE ${where} ORDER BY p.trade_date`;
+      const { rows: prices } = await client.query(baseSql, values);
+      let indicators: any[] = [];
+      if (include_indicators) {
+        const { rows } = await client.query(
+          `SELECT trade_date, ma5, ma10, ma20, macd, macd_signal, macd_hist, rsi6, rsi14, boll_upper, boll_mid, boll_lower
+           FROM tech_indicators WHERE ts_code=$1 AND freq=$2 AND trade_date BETWEEN COALESCE($3::date, '0001-01-01') AND COALESCE($4::date, '9999-12-31')
+           ORDER BY trade_date`,
+          [ts_code, freq, start || null, end || null]
+        );
+        indicators = rows;
+      }
+      return { data: { ts_code, freq, prices, indicators } };
+    } catch (e: any) {
+      return reply.code(500).send({ error: 'Failed to load kline', message: e?.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Overview
+  app.get('/overview/:ts_code', async (req, reply) => {
+    const schema = z.object({ ts_code: z.string() });
+    const parsed = schema.safeParse(req.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid ts_code' });
+    const { ts_code } = parsed.data as any;
+    const client = await pgPool.connect();
+    try {
+      const { rows: basic } = await client.query('SELECT * FROM dim_stock WHERE ts_code=$1', [ts_code]);
+      const { rows: latestPrices } = await client.query(
+        `SELECT trade_date, close FROM prices_ohlcv WHERE ts_code=$1 AND freq='D' ORDER BY trade_date DESC LIMIT 1`,
+        [ts_code]
+      );
+      const { rows: latestAI } = await client.query(
+        `SELECT as_of_date, score, action FROM ai_scores WHERE ts_code=$1 ORDER BY as_of_date DESC LIMIT 1`,
+        [ts_code]
+      );
+      return { data: { basic: basic[0] || null, last_price: latestPrices[0] || null, ai: latestAI[0] || null } };
+    } catch (e: any) {
+      return reply.code(500).send({ error: 'Failed to load overview', message: e?.message });
+    } finally {
+      client.release();
+    }
   });
 
   // 获取更新信息

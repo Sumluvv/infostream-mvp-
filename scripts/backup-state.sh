@@ -102,3 +102,5 @@ echo "📊 状态摘要: $BACKUP_DIR/state_summary.txt"
 echo "🔧 恢复脚本: $BACKUP_DIR/restore.sh"
 echo ""
 echo "💡 下次开机时运行: ./scripts/restore-state.sh"
+
+

@@ -1,0 +1,12 @@
+InfoStream MVP 状态备份
+=======================
+备份时间: Mon Sep 15 10:40:52 JST 2025
+当前分支: main
+最新提交: 230c363 chore: 自动备份状态 - 2025-09-15 10:40:50
+数据库大小: 648K	server/prisma/dev.db
+日志文件数:        0
+
+恢复方法:
+1. 进入备份目录: cd backups/20250915_104050
+2. 运行恢复脚本: ./restore.sh
+3. 启动开发环境: ../../scripts/restore-state.sh

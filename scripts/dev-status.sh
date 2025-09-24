@@ -78,3 +78,5 @@ echo "🔗 访问地址:"
 echo "   后端API: http://localhost:3001"
 echo "   前端界面: http://localhost:5173 (或 5174/5175)"
 echo "   健康检查: http://localhost:3001/health"
+
+

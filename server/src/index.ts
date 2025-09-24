@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import dotenv from 'dotenv';
 import { authRoutes } from './modules/auth/routes';
 import { feedRoutes } from './modules/feeds/routes';
+import { valuationRoutes } from './modules/valuation/routes';
 import fastifyJwt from '@fastify/jwt';
 
 dotenv.config();
@@ -15,6 +16,7 @@ const buildServer = () => {
   app.get('/health', async () => ({ status: 'ok' }));
   app.register(authRoutes, { prefix: '/api/auth' });
   app.register(feedRoutes, { prefix: '/api/feeds' });
+  app.register(valuationRoutes, { prefix: '/api/valuation' });
 
   return app;
 };

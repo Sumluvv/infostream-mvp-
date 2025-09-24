@@ -1,0 +1,6 @@
+tushare
+akshare
+psycopg[binary]
+pandas
+python-dotenv
+ta
