@@ -310,6 +310,110 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       });
     }
   });
+  
+  // 获取AI评分
+  fastify.get('/ai-score/:ts_code', async (request: FastifyRequest<{ Params: { ts_code: string } }>, reply: FastifyReply) => {
+    const { ts_code } = request.params;
+    
+    try {
+      const client = await pool.connect();
+      
+      try {
+        // 获取AI评分数据
+        const aiQuery = `
+          SELECT 
+            ts_code,
+            as_of_date,
+            score,
+            action,
+            top_factors_json,
+            model_version,
+            created_at
+          FROM ai_scores
+          WHERE ts_code = $1
+          ORDER BY as_of_date DESC, created_at DESC
+          LIMIT 1
+        `;
+        
+        const aiResult = await client.query(aiQuery, [ts_code]);
+        
+        if (aiResult.rows.length === 0) {
+          return reply.status(404).send({
+            error: 'AI score not found',
+            message: `No AI score found for ${ts_code}`
+          });
+        }
+        
+        const ai = aiResult.rows[0];
+        const topFactors = ai.top_factors_json || [];
+        
+        // 获取最新股价
+        const priceQuery = `
+          SELECT close, trade_date
+          FROM prices_ohlcv 
+          WHERE ts_code = $1 
+          ORDER BY trade_date DESC 
+          LIMIT 1
+        `;
+        
+        const priceResult = await client.query(priceQuery, [ts_code]);
+        const currentPrice = priceResult.rows[0]?.close || null;
+        
+        // 构建AI评分响应数据
+        const response = {
+          ts_code: ai.ts_code,
+          as_of_date: ai.as_of_date,
+          score: ai.score,
+          action: ai.action,
+          model_version: ai.model_version,
+          current_price: currentPrice,
+          top_factors: topFactors,
+          analysis: {
+            score_analysis: getScoreAnalysis(ai.score),
+            action_analysis: getActionAnalysis(ai.action),
+            confidence: getConfidenceLevel(ai.score, topFactors.length)
+          },
+          created_at: ai.created_at
+        };
+        
+        return reply.send(response);
+        
+      } finally {
+        client.release();
+      }
+      
+    } catch (error) {
+      fastify.log.error('AI Score API error:', error);
+      return reply.status(500).send({
+        error: 'Internal server error',
+        message: 'Failed to fetch AI score data'
+      });
+    }
+  });
+  
+  // 计算AI评分
+  fastify.post('/ai-score/:ts_code/calculate', async (request: FastifyRequest<{ 
+    Params: { ts_code: string }
+  }>, reply: FastifyReply) => {
+    const { ts_code } = request.params;
+    
+    try {
+      // 这里可以调用Python AI评分脚本
+      // 为了简化，我们返回一个模拟的响应
+      return reply.send({
+        message: 'AI score calculation initiated',
+        ts_code,
+        note: 'Please run the AI scoring script to get actual results'
+      });
+      
+    } catch (error) {
+      fastify.log.error('AI Score calculation API error:', error);
+      return reply.status(500).send({
+        error: 'Internal server error',
+        message: 'Failed to initiate AI score calculation'
+      });
+    }
+  });
 }
 
 // PE分析函数
@@ -377,4 +481,58 @@ function getDCFRecommendation(upsideDownside: number | null, rangeLow: number | 
   if (upsideDownside > -10) return '持有：DCF估值接近当前价格';
   if (upsideDownside > -30) return '卖出：DCF估值低于当前价格';
   return '强烈卖出：DCF估值显著低于当前价格';
+}
+
+// AI评分分析函数
+function getScoreAnalysis(score: number | null): string {
+  if (!score) return '数据不足';
+  
+  if (score >= 80) return 'AI评分优秀，投资价值很高';
+  if (score >= 70) return 'AI评分良好，值得关注';
+  if (score >= 60) return 'AI评分中等，谨慎投资';
+  if (score >= 40) return 'AI评分偏低，风险较高';
+  return 'AI评分很低，不建议投资';
+}
+
+// AI投资建议分析函数
+function getActionAnalysis(action: string | null): string {
+  if (!action) return '数据不足';
+  
+  switch (action) {
+    case '强烈买入':
+      return 'AI强烈推荐买入，预期收益较高';
+    case '买入':
+      return 'AI建议买入，存在投资机会';
+    case '持有':
+      return 'AI建议持有，维持现状';
+    case '观望':
+      return 'AI建议观望，等待更好时机';
+    case '卖出':
+      return 'AI建议卖出，降低风险';
+    default:
+      return 'AI建议不明确，需要更多信息';
+  }
+}
+
+// 置信度分析函数
+function getConfidenceLevel(score: number | null, factorCount: number): string {
+  if (!score) return '低';
+  
+  let confidence = '中';
+  
+  // 基于评分范围
+  if (score >= 80 || score <= 20) {
+    confidence = '高';
+  } else if (score >= 60 && score <= 40) {
+    confidence = '低';
+  }
+  
+  // 基于因素数量
+  if (factorCount >= 5) {
+    confidence = confidence === '高' ? '高' : '中';
+  } else if (factorCount < 3) {
+    confidence = '低';
+  }
+  
+  return confidence;
 }

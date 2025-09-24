@@ -4,3 +4,6 @@ psycopg[binary]
 pandas
 python-dotenv
 ta
+lightgbm
+scikit-learn
+shap
