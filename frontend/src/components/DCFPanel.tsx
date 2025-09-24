@@ -64,8 +64,14 @@ const DCFPanel: React.FC<DCFPanelProps> = ({ tsCode }) => {
         const response = await apiFunctions.getDCFValuation(tsCode);
         setDcfData(response.data);
         setError(null);
-      } catch (err) {
-        setError('获取DCF估值数据失败');
+      } catch (err: any) {
+        // 如果是404，提示可计算
+        if (err?.response?.status === 404) {
+          setDcfData(null);
+          setError('no-data');
+        } else {
+          setError('获取DCF估值数据失败');
+        }
         console.error('DCF data fetch error:', err);
       } finally {
         setLoading(false);
@@ -89,12 +95,42 @@ const DCFPanel: React.FC<DCFPanelProps> = ({ tsCode }) => {
     );
   }
 
-  if (error || !dcfData) {
+  if ((error && error !== 'no-data') || (!dcfData && error !== 'no-data')) {
     return (
       <div className="bg-white rounded-lg shadow-md p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">DCF估值分析</h3>
         <div className="text-center py-8">
-          <p className="text-red-600">{error || '暂无DCF估值数据'}</p>
+          <p className="text-red-600">{error || '加载失败'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error === 'no-data') {
+    return (
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">DCF估值分析</h3>
+        <div className="text-center py-8 space-y-4">
+          <p className="text-gray-600">暂无DCF估值数据</p>
+          <button
+            className="btn btn-primary px-4"
+            onClick={async () => {
+              try {
+                setLoading(true);
+                await apiFunctions.calculateDCF(tsCode, {});
+                // 计算后重新拉取
+                const resp = await apiFunctions.getDCFValuation(tsCode);
+                setDcfData(resp.data);
+                setError(null);
+              } catch (e) {
+                console.error('DCF calculate error', e);
+              } finally {
+                setLoading(false);
+              }
+            }}
+          >
+            一键计算DCF
+          </button>
         </div>
       </div>
     );

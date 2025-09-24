@@ -20,6 +20,32 @@ export const HomePage: React.FC = () => {
   const [stocks, setStocks] = useState<StockOverview[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hots, setHots] = useState<StockOverview[]>([])
+
+  // 加载热门股票
+  useEffect(() => {
+    const loadHots = async () => {
+      try {
+        const resp = await api.get('/feeds/hot?limit=9')
+        const items = resp.data?.items || []
+        const mapped: StockOverview[] = items.map((it: any) => ({
+          ts_code: it.ts_code,
+          name: (it.name || '').toString().trim(),
+          industry: it.industry || '',
+          market: it.exchange || '',
+          list_date: it.trade_date || '',
+          last_price: it.close != null ? Number(it.close) : undefined,
+          change_percent: it.pct_chg != null ? Number(it.pct_chg) : undefined,
+          pe_ratio: undefined,
+          pb_ratio: undefined,
+        }))
+        setHots(mapped)
+      } catch (e) {
+        // 静默使用内置 popularStocks
+      }
+    }
+    loadHots()
+  }, [])
 
   // 搜索股票
   const handleSearch = async () => {
@@ -31,7 +57,19 @@ export const HomePage: React.FC = () => {
     try {
       // 调用搜索API
       const response = await api.get(`/feeds/search?q=${encodeURIComponent(searchTerm)}`)
-      setStocks(response.data.stocks || [])
+      const items = response.data?.items || []
+      const mapped: StockOverview[] = items.map((it: any) => ({
+        ts_code: it.ts_code,
+        name: (it.name || '').toString().trim(),
+        industry: it.industry || '',
+        market: it.exchange || '',
+        list_date: it.list_date || '',
+        last_price: undefined,
+        change_percent: undefined,
+        pe_ratio: undefined,
+        pb_ratio: undefined,
+      }))
+      setStocks(mapped)
     } catch (err) {
       // 如果搜索API不存在，使用模拟数据
       console.warn('搜索API不可用，使用模拟数据')
@@ -123,8 +161,8 @@ export const HomePage: React.FC = () => {
               type="text"
               placeholder="输入股票代码或名称，如：600519 或 贵州茅台"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
               className="input pl-10 w-full"
             />
           </div>
@@ -160,7 +198,7 @@ export const HomePage: React.FC = () => {
       <div>
         <h2 className="text-2xl font-semibold text-gray-900 mb-6">热门股票推荐</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {popularStocks.map((stock) => (
+          {(hots.length > 0 ? hots : popularStocks).map((stock) => (
             <StockCard key={stock.ts_code} stock={stock} />
           ))}
         </div>

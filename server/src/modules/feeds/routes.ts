@@ -1,10 +1,15 @@
 
+
+
+
 import type { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 import Parser from 'rss-parser';
 import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
+import { spawn } from 'child_process';
+import path from 'path';
 import { z } from 'zod';
 import iconv from 'iconv-lite';
 
@@ -731,7 +736,21 @@ export async function feedRoutes(app: FastifyInstance) {
     app.log.info('Feed update tasks are disabled by FEEDS_DISABLE_TASKS');
   }
   
+  // 仅对需要的路由启用鉴权；公开数据接口放行
   app.addHook('onRequest', async (req, reply) => {
+    const url = req.url || '';
+    const method = (req.method || 'GET').toUpperCase();
+    const isPublicGet = method === 'GET' && (
+      /\/kline\//.test(url) ||
+      /\/overview\//.test(url) ||
+      /\/update-info$/.test(url) ||
+      /\/search(\?|$)/.test(url) ||
+      /\/hot(\?|$)/.test(url)
+    );
+    const isPublicPost = method === 'POST' && (
+      /\/auto-import\//.test(url)
+    );
+    if (isPublicGet || isPublicPost) return;
     try {
       await (req as any).jwtVerify();
     } catch {
@@ -768,7 +787,7 @@ export async function feedRoutes(app: FastifyInstance) {
       end: z.string().optional(),
       include_indicators: z.coerce.boolean().optional().default(true)
     });
-    const params = schema.safeParse({ ...req.params, ...req.query });
+    const params = schema.safeParse({ ...(req.params || {}), ...(req.query || {}) });
     if (!params.success) return reply.code(400).send({ error: 'Invalid params' });
 
     const { ts_code, period, start, end, include_indicators } = params.data as any;
@@ -792,9 +811,68 @@ export async function feedRoutes(app: FastifyInstance) {
         );
         indicators = rows;
       }
-      return { data: { ts_code, freq, prices, indicators } };
+      return { ts_code, freq, prices, indicators };
     } catch (e: any) {
       return reply.code(500).send({ error: 'Failed to load kline', message: e?.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Search dim_stock by keyword (ts_code or name)
+  app.get('/search', async (req, reply) => {
+    const schema = z.object({ q: z.string().trim().min(1), limit: z.coerce.number().min(1).max(100).optional().default(20) });
+    const parsed = schema.safeParse({ ...(req.query || {}) });
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid query' });
+    const { q, limit } = parsed.data as any;
+    const client = await pgPool.connect();
+    try {
+      const keyword = `%${q}%`;
+      const { rows } = await client.query(
+        `SELECT ts_code, name, industry, list_date, exchange
+         FROM dim_stock
+         WHERE ts_code ILIKE $1 OR name ILIKE $1
+         ORDER BY ts_code
+         LIMIT $2`,
+        [keyword, limit]
+      );
+      return { items: rows };
+    } catch (e: any) {
+      return reply.code(500).send({ error: 'Failed to search stocks', message: e?.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Hot stocks: recent movers by pct_chg or volume over last trade day
+  app.get('/hot', async (req, reply) => {
+    const schema = z.object({ limit: z.coerce.number().min(1).max(100).optional().default(12) });
+    const parsed = schema.safeParse({ ...(req.query || {}) });
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid query' });
+    const { limit } = parsed.data as any;
+
+    const client = await pgPool.connect();
+    try {
+      // 选取最近一个交易日的数据，按涨跌幅绝对值与成交额综合排序
+      const { rows: recentDateRows } = await client.query(
+        `SELECT MAX(trade_date) AS latest FROM prices_ohlcv WHERE freq='D'`
+      );
+      const latest = recentDateRows[0]?.latest;
+      if (!latest) return { items: [] };
+
+      const { rows } = await client.query(
+        `SELECT p.ts_code, d.name, d.industry, d.exchange,
+                p.trade_date, p.close, p.pct_chg, p.vol, p.amount
+         FROM prices_ohlcv p
+         JOIN dim_stock d ON d.ts_code = p.ts_code
+         WHERE p.freq='D' AND p.trade_date = $1
+         ORDER BY GREATEST(ABS(COALESCE(p.pct_chg,0)), 0) DESC, COALESCE(p.amount,0) DESC
+         LIMIT $2`,
+        [latest, limit]
+      );
+      return { items: rows };
+    } catch (e: any) {
+      return reply.code(500).send({ error: 'Failed to load hot stocks', message: e?.message });
     } finally {
       client.release();
     }
@@ -817,11 +895,42 @@ export async function feedRoutes(app: FastifyInstance) {
         `SELECT as_of_date, score, action FROM ai_scores WHERE ts_code=$1 ORDER BY as_of_date DESC LIMIT 1`,
         [ts_code]
       );
-      return { data: { basic: basic[0] || null, last_price: latestPrices[0] || null, ai: latestAI[0] || null } };
+      return { basic: basic[0] || null, last_price: latestPrices[0] || null, ai: latestAI[0] || null };
     } catch (e: any) {
       return reply.code(500).send({ error: 'Failed to load overview', message: e?.message });
     } finally {
       client.release();
+    }
+  });
+
+  // 一键导入指定股票的基础数据（K线 + 技术指标 + 可选财务）
+  app.post('/auto-import/:ts_code', async (req, reply) => {
+    const schema = z.object({ ts_code: z.string() });
+    const parsed = schema.safeParse(req.params);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid ts_code' });
+    const { ts_code } = parsed.data as any;
+
+    try {
+      const etlDir = path.resolve(process.cwd(), '..', 'etl');
+
+      // 运行 import_ohlcv.py
+      const runPy = (script: string, args: string[] = []) =>
+        new Promise<void>((resolve, reject) => {
+          const p = spawn('python3', [path.join(etlDir, script), ...args], { cwd: etlDir });
+          p.on('error', reject);
+          p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${script} exit ${code}`))));
+        });
+
+      // 后台顺序执行：K线 -> 指标
+      runPy('import_ohlcv.py', ['--ts', ts_code])
+        .then(() => runPy('compute_indicators.py', ['--ts', ts_code]))
+        .catch((e) => {
+          console.error('Auto-import failed:', e?.message || e);
+        });
+
+      return reply.send({ message: 'Import started', ts_code });
+    } catch (e: any) {
+      return reply.code(500).send({ error: 'Failed to start import', message: e?.message });
     }
   });
 

@@ -33,7 +33,23 @@ export const TechnicalIndicators: React.FC<TechnicalIndicatorsProps> = ({ tsCode
         setError(null)
         
         const response = await api.get(`/feeds/kline/${tsCode}`)
-        setIndicators(response.data.indicators || [])
+        const payload = response.data || {}
+        const raw = payload.indicators || payload.data?.indicators || []
+        const mapped = raw.map((t: any) => ({
+          date: (t.trade_date || t.date || '').toString().slice(0,10),
+          ma5: t.ma5 != null ? Number(t.ma5) : undefined,
+          ma10: t.ma10 != null ? Number(t.ma10) : undefined,
+          ma20: t.ma20 != null ? Number(t.ma20) : undefined,
+          ma60: t.ma60 != null ? Number(t.ma60) : undefined,
+          macd: t.macd != null ? Number(t.macd) : undefined,
+          macd_signal: t.macd_signal != null ? Number(t.macd_signal) : undefined,
+          macd_histogram: (t.macd_hist ?? t.macd_histogram) != null ? Number(t.macd_hist ?? t.macd_histogram) : undefined,
+          rsi: (t.rsi14 ?? t.rsi6 ?? t.rsi) != null ? Number(t.rsi14 ?? t.rsi6 ?? t.rsi) : undefined,
+          boll_upper: t.boll_upper != null ? Number(t.boll_upper) : undefined,
+          boll_middle: (t.boll_mid ?? t.boll_middle) != null ? Number(t.boll_mid ?? t.boll_middle) : undefined,
+          boll_lower: t.boll_lower != null ? Number(t.boll_lower) : undefined,
+        }))
+        setIndicators(mapped)
       } catch (err) {
         setError('获取技术指标失败')
         console.error('Error fetching indicators:', err)

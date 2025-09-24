@@ -32,17 +32,20 @@ export const AIScorePanel: React.FC<AIScorePanelProps> = ({ tsCode }) => {
       try {
         setLoading(true)
         setError(null)
-        
         const response = await api.get(`/valuation/ai-score/${tsCode}`)
         setAiScore(response.data)
-      } catch (err) {
-        setError('获取AI评分失败')
+      } catch (err: any) {
+        if (err?.response?.status === 404) {
+          setAiScore(null)
+          setError('no-data')
+        } else {
+          setError('获取AI评分失败')
+        }
         console.error('Error fetching AI score:', err)
       } finally {
         setLoading(false)
       }
     }
-    
     fetchAIScore()
   }, [tsCode])
 
@@ -94,7 +97,7 @@ export const AIScorePanel: React.FC<AIScorePanelProps> = ({ tsCode }) => {
     )
   }
 
-  if (error || !aiScore) {
+  if ((error && error !== 'no-data') || (!aiScore && error !== 'no-data')) {
     return (
       <div className="card">
         <div className="card-header">
@@ -105,7 +108,43 @@ export const AIScorePanel: React.FC<AIScorePanelProps> = ({ tsCode }) => {
         </div>
         <div className="card-content">
           <div className="text-center text-gray-500 py-8">
-            <p>{error || '暂无AI评分数据'}</p>
+            <p>{error || '加载失败'}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (error === 'no-data') {
+    return (
+      <div className="card">
+        <div className="card-header">
+          <div className="flex items-center space-x-2">
+            <Brain className="h-5 w-5 text-primary-600" />
+            <h2 className="card-title">AI智能评分</h2>
+          </div>
+        </div>
+        <div className="card-content">
+          <div className="text-center text-gray-500 py-8 space-y-4">
+            <p>暂无AI评分数据</p>
+            <button
+              className="btn btn-primary px-4"
+              onClick={async () => {
+                try {
+                  setLoading(true)
+                  await api.post(`/valuation/ai-score/${tsCode}/calculate`)
+                  const resp = await api.get(`/valuation/ai-score/${tsCode}`)
+                  setAiScore(resp.data)
+                  setError(null)
+                } catch (e) {
+                  console.error('AI score calculate error', e)
+                } finally {
+                  setLoading(false)
+                }
+              }}
+            >
+              一键计算AI评分
+            </button>
           </div>
         </div>
       </div>

@@ -38,8 +38,29 @@ export const StockDetailPage: React.FC = () => {
         setError(null)
         
         // 获取股票概览信息
-        const overviewResponse = await api.get(`/feeds/overview/${tsCode}`)
-        const overview = overviewResponse.data
+        let overview: any
+        try {
+          const overviewResponse = await api.get(`/feeds/overview/${tsCode}`)
+          overview = overviewResponse.data
+        } catch (e: any) {
+          // 若404，触发自动导入并轮询
+          if (e?.response?.status === 404) {
+            await api.post(`/feeds/auto-import/${tsCode}`)
+            // 轮询最多30秒
+            const start = Date.now()
+            while (Date.now() - start < 30000) {
+              try {
+                const r = await api.get(`/feeds/overview/${tsCode}`)
+                overview = r.data
+                break
+              } catch {
+                await new Promise(res => setTimeout(res, 1500))
+              }
+            }
+          } else {
+            throw e
+          }
+        }
         
         // 获取估值信息
         let valuation = null
@@ -57,7 +78,7 @@ export const StockDetailPage: React.FC = () => {
           industry: overview.basic?.industry || '未知行业',
           market: overview.basic?.market || '未知市场',
           list_date: overview.basic?.list_date || '',
-          last_price: overview.last_price?.close || 0,
+          last_price: Number(overview.last_price?.close ?? 0),
           change_percent: overview.last_price?.change_percent || 0,
           pe_ratio: valuation?.valuation?.pe_ratio,
           pb_ratio: valuation?.valuation?.pb_ratio,
@@ -78,8 +99,10 @@ export const StockDetailPage: React.FC = () => {
     fetchStockDetail()
   }, [tsCode])
 
-  const formatPrice = (price: number) => {
-    return price.toFixed(2)
+  const formatPrice = (price: number | string | null | undefined) => {
+    const n = Number(price)
+    if (Number.isNaN(n)) return '--'
+    return n.toFixed(2)
   }
 
   const formatPercent = (percent: number) => {

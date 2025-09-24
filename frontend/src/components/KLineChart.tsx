@@ -41,17 +41,40 @@ export const KLineChart: React.FC<KLineChartProps> = ({ tsCode }) => {
       try {
         setLoading(true)
         setError(null)
-        
-        // 获取K线数据
-        const klineResponse = await api.get(`/feeds/kline/${tsCode}`)
-        const klineData = klineResponse.data.prices || []
-        
-        // 获取技术指标数据
-        const indicatorsResponse = await api.get(`/feeds/kline/${tsCode}`)
-        const indicatorsData = indicatorsResponse.data.indicators || []
-        
-        setKlineData(klineData)
-        setIndicators(indicatorsData)
+
+        // 后端返回: { ts_code, freq, prices, indicators }
+        const resp = await api.get(`/feeds/kline/${tsCode}`)
+        const payload = resp.data || {}
+
+        const rawPrices = payload.prices || payload.data?.prices || []
+        const rawIndicators = payload.indicators || payload.data?.indicators || []
+
+        const mappedPrices: KLineData[] = rawPrices.map((p: any) => ({
+          date: (p.trade_date || p.date || '').toString().slice(0, 10),
+          open: Number(p.open ?? 0),
+          close: Number(p.close ?? 0),
+          high: Number(p.high ?? 0),
+          low: Number(p.low ?? 0),
+          volume: Number(p.vol ?? p.volume ?? 0),
+        }))
+
+        const mappedIndicators: TechnicalIndicator[] = rawIndicators.map((t: any) => ({
+          date: (t.trade_date || t.date || '').toString().slice(0, 10),
+          ma5: t.ma5,
+          ma10: t.ma10,
+          ma20: t.ma20,
+          ma60: t.ma60,
+          macd: t.macd,
+          macd_signal: t.macd_signal,
+          macd_histogram: t.macd_hist ?? t.macd_histogram,
+          rsi: t.rsi14 ?? t.rsi6 ?? t.rsi,
+          boll_upper: t.boll_upper,
+          boll_middle: t.boll_mid ?? t.boll_middle,
+          boll_lower: t.boll_lower,
+        }))
+
+        setKlineData(mappedPrices)
+        setIndicators(mappedIndicators)
       } catch (err) {
         setError('获取K线数据失败')
         console.error('Error fetching kline data:', err)
@@ -68,6 +91,7 @@ export const KLineChart: React.FC<KLineChartProps> = ({ tsCode }) => {
 
     // 准备K线数据
     const dates = klineData.map(item => item.date)
+    // ECharts蜡烛默认格式: [open, close, low, high]
     const ohlcData = klineData.map(item => [item.open, item.close, item.low, item.high])
     const volumeData = klineData.map(item => item.volume)
 
@@ -96,14 +120,15 @@ export const KLineChart: React.FC<KLineChartProps> = ({ tsCode }) => {
           params.forEach((param: any) => {
             if (param.seriesName === 'K线') {
               const data = param.data
-              result += `开盘: ${data[1].toFixed(2)}<br/>`
-              result += `收盘: ${data[2].toFixed(2)}<br/>`
-              result += `最低: ${data[3].toFixed(2)}<br/>`
-              result += `最高: ${data[4].toFixed(2)}<br/>`
+              // data: [open, close, low, high]
+              result += `开盘: ${Number(data[0]).toFixed(2)}<br/>`
+              result += `收盘: ${Number(data[1]).toFixed(2)}<br/>`
+              result += `最低: ${Number(data[2]).toFixed(2)}<br/>`
+              result += `最高: ${Number(data[3]).toFixed(2)}<br/>`
             } else if (param.seriesName === '成交量') {
               result += `成交量: ${param.data.toLocaleString()}<br/>`
             } else {
-              result += `${param.seriesName}: ${param.data.toFixed(2)}<br/>`
+              result += `${param.seriesName}: ${Number(param.data).toFixed(2)}<br/>`
             }
           })
           return result

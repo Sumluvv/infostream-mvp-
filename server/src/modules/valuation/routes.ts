@@ -12,7 +12,7 @@ const pool = new Pool({
 
 export async function valuationRoutes(fastify: FastifyInstance) {
   // 获取股票估值信息
-  fastify.get('/valuation/:ts_code', async (request: FastifyRequest<{ Params: { ts_code: string } }>, reply: FastifyReply) => {
+  fastify.get('/:ts_code', async (request: FastifyRequest<{ Params: { ts_code: string } }>, reply: FastifyReply) => {
     const { ts_code } = request.params;
     
     try {
@@ -111,7 +111,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       }
       
     } catch (error) {
-      fastify.log.error('Valuation API error:', error);
+      fastify.log.error('Valuation API error:', error as any);
       return reply.status(500).send({
         error: 'Internal server error',
         message: 'Failed to fetch valuation data'
@@ -120,7 +120,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
   });
   
   // 获取估值历史
-  fastify.get('/valuation/:ts_code/history', async (request: FastifyRequest<{ Params: { ts_code: string } }>, reply: FastifyReply) => {
+  fastify.get('/:ts_code/history', async (request: FastifyRequest<{ Params: { ts_code: string } }>, reply: FastifyReply) => {
     const { ts_code } = request.params;
     
     try {
@@ -164,7 +164,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       }
       
     } catch (error) {
-      fastify.log.error('Valuation history API error:', error);
+      fastify.log.error('Valuation history API error:', error as any);
       return reply.status(500).send({
         error: 'Internal server error',
         message: 'Failed to fetch valuation history'
@@ -264,7 +264,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       }
       
     } catch (error) {
-      fastify.log.error('DCF API error:', error);
+      fastify.log.error('DCF API error:', error as any);
       return reply.status(500).send({
         error: 'Internal server error',
         message: 'Failed to fetch DCF valuation data'
@@ -303,7 +303,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       });
       
     } catch (error) {
-      fastify.log.error('DCF calculation API error:', error);
+      fastify.log.error('DCF calculation API error:', error as any);
       return reply.status(500).send({
         error: 'Internal server error',
         message: 'Failed to initiate DCF calculation'
@@ -383,7 +383,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       }
       
     } catch (error) {
-      fastify.log.error('AI Score API error:', error);
+      fastify.log.error('AI Score API error:', error as any);
       return reply.status(500).send({
         error: 'Internal server error',
         message: 'Failed to fetch AI score data'
@@ -407,7 +407,7 @@ export async function valuationRoutes(fastify: FastifyInstance) {
       });
       
     } catch (error) {
-      fastify.log.error('AI Score calculation API error:', error);
+      fastify.log.error('AI Score calculation API error:', error as any);
       return reply.status(500).send({
         error: 'Internal server error',
         message: 'Failed to initiate AI score calculation'

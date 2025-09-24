@@ -134,7 +134,7 @@ export const ValuationPanel: React.FC<ValuationPanelProps> = ({ tsCode }) => {
           {/* 当前价格 */}
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-600">当前价格</span>
-            <span className="text-lg font-semibold">¥{valuation.current_price.toFixed(2)}</span>
+            <span className="text-lg font-semibold">¥{Number(valuation.current_price ?? 0).toFixed(2)}</span>
           </div>
 
           {/* PE/PB比率 */}
@@ -142,13 +142,13 @@ export const ValuationPanel: React.FC<ValuationPanelProps> = ({ tsCode }) => {
             <div className="text-center p-3 bg-gray-50 rounded-lg">
               <div className="text-sm text-gray-600">PE比率</div>
               <div className="text-xl font-bold text-primary-600">
-                {valuation.valuation.pe_ratio.toFixed(2)}
+                {Number(valuation.valuation.pe_ratio ?? 0).toFixed(2)}
               </div>
             </div>
             <div className="text-center p-3 bg-gray-50 rounded-lg">
               <div className="text-sm text-gray-600">PB比率</div>
               <div className="text-xl font-bold text-primary-600">
-                {valuation.valuation.pb_ratio.toFixed(2)}
+                {Number(valuation.valuation.pb_ratio ?? 0).toFixed(2)}
               </div>
             </div>
           </div>
@@ -159,19 +159,19 @@ export const ValuationPanel: React.FC<ValuationPanelProps> = ({ tsCode }) => {
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-gray-600">EPS</span>
-                <span className="font-medium">{valuation.financials.eps.toFixed(2)}</span>
+                <span className="font-medium">{Number(valuation.financials.eps ?? 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">BPS</span>
-                <span className="font-medium">{valuation.financials.bps.toFixed(2)}</span>
+                <span className="font-medium">{Number(valuation.financials.bps ?? 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">ROE</span>
-                <span className="font-medium">{valuation.financials.roe.toFixed(2)}%</span>
+                <span className="font-medium">{Number(valuation.financials.roe ?? 0).toFixed(2)}%</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">营收</span>
-                <span className="font-medium">{(valuation.financials.revenue / 100000000).toFixed(1)}亿</span>
+                <span className="font-medium">{(Number(valuation.financials.revenue ?? 0) / 100000000).toFixed(1)}亿</span>
               </div>
             </div>
           </div>
