@@ -40,6 +40,9 @@ async function updateRSSFeeds() {
  
  
  
+ 
+ 
+ 
             });
 
             if (!existingItem && item.link) {
@@ -72,17 +75,22 @@ async function updateWebpageFeeds() {
     for (const feed of feeds) {
       try {
         // 重新检测网页分类和文章
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        
         const response = await fetch(feed.url, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
           },
-          timeout: 30000
+          signal: controller.signal
         });
+        
+        clearTimeout(timeoutId);
         
         if (response.ok) {
           const html = await response.text();
           const $ = cheerio.load(html);
-          
+
           // 删除过期文章（超过30天）
           const thirtyDaysAgo = new Date();
           thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -101,7 +109,7 @@ async function updateWebpageFeeds() {
           ];
           
           const selectors = ['a', '.news-item a', '.article-item a', '.policy-item a'];
-          const newArticles = [];
+          const newArticles: Array<{title: string, link: string, pubDate: Date}> = [];
           
           for (const selector of selectors) {
             $(selector).each((_, element) => {
@@ -435,10 +443,12 @@ export async function feedRoutes(app: FastifyInstance) {
       // 使用选择器抓取内容
       const scrapedData = await page.evaluate((sel) => {
         const elements = document.querySelectorAll(sel.title);
-        const items = [];
+        const items: Array<{title: string, content: string, link: string, time: string}> = [];
         
         for (let i = 0; i < Math.min(elements.length, 10); i++) {
           const element = elements[i];
+          if (!element) continue;
+          
           const title = element.textContent?.trim() || '';
           const link = element.closest('a')?.href || '';
           
@@ -447,7 +457,7 @@ export async function feedRoutes(app: FastifyInstance) {
           const content = contentEl?.textContent?.trim() || '';
           
           // 尝试找到时间
-          const timeEl = element.closest('*')?.querySelector(sel.time);
+          const timeEl = element.closest('*')?.querySelector(sel.time || '');
           const time = timeEl?.textContent?.trim() || new Date().toISOString();
           
           if (title) {
@@ -508,7 +518,7 @@ export async function feedRoutes(app: FastifyInstance) {
           .map(h => ({ text: h.textContent?.trim(), tag: h.tagName }));
         const links = Array.from(document.querySelectorAll('a[href]'))
           .slice(0, 10)
-          .map(a => ({ text: a.textContent?.trim(), href: a.href }));
+          .map(a => ({ text: a.textContent?.trim(), href: (a as HTMLAnchorElement).href }));
         
         return { title, headings, links };
       });
@@ -562,12 +572,17 @@ export async function feedRoutes(app: FastifyInstance) {
     
     try {
       // 首先尝试使用cheerio快速解析静态内容
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
       const response = await fetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
-        timeout: 30000
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         return reply.code(400).send({ error: 'Failed to fetch webpage' });
@@ -589,16 +604,21 @@ export async function feedRoutes(app: FastifyInstance) {
 
         async function fetchListPage(listUrl: string) {
           try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
+            
             const res = await fetch(listUrl, {
               headers: {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
               },
-              timeout: 20000
+              signal: controller.signal
             });
+            
+            clearTimeout(timeoutId);
             if (!res.ok) return [] as any[];
             const html2 = await res.text();
             const $$ = cheerio.load(html2);
-            const articles: any[] = [];
+            const articles: Array<{title: string, link: string, pubDate: string}> = [];
             // 常见列表结构：ul li a, .list a, .news-list a
             $$(
               'ul li a, .list a, .news-list a, .article-list a, .info-list a'
@@ -619,7 +639,7 @@ export async function feedRoutes(app: FastifyInstance) {
           }
         }
 
-        const categories: any[] = [];
+        const categories: Array<{name: string, selector: string, articles: Array<{title: string, link: string, pubDate: string}>}> = [];
         for (const cfg of siteCategories) {
           // 在首页内寻找相关入口链接
           let candidateHref: string | null = null;
@@ -637,7 +657,7 @@ export async function feedRoutes(app: FastifyInstance) {
           // 如果首页没找到，尝试根据已知路径猜测一个列表入口
           if (!candidateHref) {
             const guesses = cfg.hrefCandidates.filter(k => k.startsWith('/'));
-            if (guesses.length > 0) {
+            if (guesses.length > 0 && guesses[0]) {
               candidateHref = new URL(guesses[0], url).href;
             }
           }
@@ -655,7 +675,7 @@ export async function feedRoutes(app: FastifyInstance) {
         }
         // 若定制失败则继续走通用检测
       }
-      
+
       // 政府网站常见分类关键词
       const governmentCategories = [
         '规范性文件', '政策解读', '通知公告', '要闻', '最新政策', '政策文件',
@@ -664,7 +684,7 @@ export async function feedRoutes(app: FastifyInstance) {
       ];
       
       // 智能检测分类
-      const categories = [];
+      const categories: Array<{name: string, selector: string, articles: Array<{title: string, link: string, pubDate: string}>}> = [];
       const processedSelectors = new Set();
       
       // 检测导航菜单、侧边栏、内容区域中的分类
@@ -690,7 +710,7 @@ export async function feedRoutes(app: FastifyInstance) {
               processedSelectors.add(text);
               
               // 尝试找到对应的文章列表
-              const articles = [];
+              const articles: Array<{title: string, link: string, pubDate: string}> = [];
               const parent = $(element).closest('ul, ol, div, section');
               
               if (parent.length > 0) {
@@ -809,7 +829,7 @@ export async function feedRoutes(app: FastifyInstance) {
           await browser.close();
 
           return {
-            screenshot: `data:image/jpeg;base64,${screenshot.toString('base64')}`,
+            screenshot: `data:image/jpeg;base64,${Buffer.from(screenshot).toString('base64')}`,
             url
           };
         } catch (e) {
@@ -827,7 +847,7 @@ export async function feedRoutes(app: FastifyInstance) {
         </text>
       </svg>`;
       
-      return { 
+      return {
         screenshot: `data:image/svg+xml;base64,${Buffer.from(svgPlaceholder).toString('base64')}`,
         url: url,
         error: 'Screenshot generation failed'
@@ -858,7 +878,7 @@ export async function feedRoutes(app: FastifyInstance) {
     console.log('Received categories:', JSON.stringify(categories, null, 2));
     
     try {
-      const createdFeeds = [];
+      const createdFeeds: Array<{id: string, title: string | null, articlesCount: number}> = [];
       
       for (const category of categories) {
         console.log(`Processing category: ${category.name}, articles count: ${category.articles?.length || 0}`);
@@ -1007,12 +1027,17 @@ export async function feedRoutes(app: FastifyInstance) {
     const { url, mode = 'auto' } = parsed.data;
     
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      
       const response = await fetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
-        timeout: 25000
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) return reply.code(400).send({ error: 'Failed to fetch webpage' });
       
@@ -1022,11 +1047,11 @@ export async function feedRoutes(app: FastifyInstance) {
       let charset = 'utf-8';
       if (/charset=([^;]+)/i.test(ct)) {
         const m = ct.match(/charset=([^;]+)/i);
-        if (m) charset = m[1].toLowerCase();
+        if (m && m[1]) charset = m[1].toLowerCase();
       } else {
         const head = buf.slice(0, 2048).toString('ascii');
         const m2 = head.match(/charset\s*=\s*([a-zA-Z0-9-]+)/i);
-        if (m2) charset = m2[1].toLowerCase();
+        if (m2 && m2[1]) charset = m2[1].toLowerCase();
       }
       
       if (charset.includes('gbk') || charset.includes('gb2312')) {
@@ -1037,7 +1062,7 @@ export async function feedRoutes(app: FastifyInstance) {
         ? iconv.decode(buf, 'gbk')
         : buf.toString('utf-8');
       
-      let groups: Array<{ heading: string; articles: any[] }> = [];
+      let groups: Array<{ heading: string; articles: Array<{title: string, link: string, pubDate: string}> }> = [];
       
       // 提取建议标题
       const $meta = cheerio.load(html);
@@ -1047,7 +1072,7 @@ export async function feedRoutes(app: FastifyInstance) {
           if (textSel && textSel.length) {
             const html = $meta(textSel).html() || '';
             const match = html.match(/当前位置[:：]\s*(.+)/);
-            if (match) {
+            if (match && match[1]) {
               const breadcrumbHtml = match[1];
               const linkTexts: string[] = [];
               const $breadcrumb = cheerio.load(breadcrumbHtml);
@@ -1065,10 +1090,10 @@ export async function feedRoutes(app: FastifyInstance) {
                   .trim();
                 const tokens = cleanText.split(/[>＞]/).map(s=>s.trim()).filter(Boolean);
                 const cleaned = tokens.filter(p => !/^首页$/.test(p) && p.length <= 20);
-                if (cleaned.length) return cleaned[cleaned.length - 1];
+                if (cleaned.length) return cleaned[cleaned.length - 1] || null;
               } else {
                 const cleaned = linkTexts.filter(p => !/^首页$/.test(p) && p.length <= 20);
-                if (cleaned.length) return cleaned[cleaned.length - 1];
+                if (cleaned.length) return cleaned[cleaned.length - 1] || null;
               }
             }
           }
@@ -1085,7 +1110,7 @@ export async function feedRoutes(app: FastifyInstance) {
                 if (t) parts.push(t);
               });
               const cleaned = parts.filter(p => !/^首页$/.test(p) && p.length <= 20);
-              if (cleaned.length) return cleaned[cleaned.length - 1];
+              if (cleaned.length) return cleaned[cleaned.length - 1] || null;
             }
           }
           
@@ -1094,7 +1119,10 @@ export async function feedRoutes(app: FastifyInstance) {
             if (text.includes('>') || text.includes('＞')) {
               const tokens = text.split(/[>＞]/).map(s=>s.trim()).filter(Boolean);
               const cleaned = tokens.filter(p => !/^首页$/.test(p) && p.length <= 20);
-              if (cleaned.length >= 2) return cleaned[cleaned.length - 1];
+              if (cleaned.length >= 2) {
+                // 找到匹配项，停止遍历
+                return false;
+              }
             }
           });
           
@@ -1213,7 +1241,7 @@ function segmentByHeadings(url: string, html: string) {
     if (blacklistHeadingRegex.test(name)) return;
 
     const currentLevel = parseInt((h.tagName || 'h3').replace(/[^0-9]/g, '')) || 3;
-    const articles: any[] = [];
+    const articles: Array<{title: string, link: string, pubDate: string}> = [];
     let walker = $(h).next();
     let steps = 0;
     while (walker.length && steps < 25) {
@@ -1301,7 +1329,7 @@ function segmentByClusters(url: string, html: string) {
   function normalizeUrl(href: string) {
     try { return new URL(href, url).href; } catch { return ''; }
   }
-  function getDomPath(el: cheerio.Element | undefined): string {
+  function getDomPath(el: any): string {
     const parts: string[] = [];
     let node: any = el;
     let steps = 0;
@@ -1397,18 +1425,19 @@ function segmentByPathPatterns(url: string, html: string) {
           key = dirParts.join('/');
         }
       } else if (parts.length === 1) {
-        key = parts[0];
+        key = parts[0] || '其他内容';
       } else {
         key = '其他内容';
       }
       
       if (!buckets[key]) buckets[key] = [];
-      buckets[key].push({ title: text.replace(/\s+/g,' '), link: full, pubDate: new Date().toISOString() });
+      buckets[key]?.push({ title: text.replace(/\s+/g,' '), link: full, pubDate: new Date().toISOString() });
     } catch {}
   });
   
-  const result: Array<{ heading: string; articles: any[] }> = [];
+  const result: Array<{ heading: string; articles: Array<{title: string, link: string, pubDate: string}> }> = [];
   for (const [k, arr] of Object.entries(buckets)) {
+    if (!arr) continue;
     const seen = new Set<string>();
     const uniq = arr.filter(a=>{ if (seen.has(a.link)) return false; seen.add(a.link); return true; });
     if (uniq.length >= 3) result.push({ heading: k, articles: uniq.slice(0,50) });
