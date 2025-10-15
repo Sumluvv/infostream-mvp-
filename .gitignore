@@ -7,3 +7,5 @@ build
 coverage
 .vscode
 .idea
+server/dev.out.log
+*.log
